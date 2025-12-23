@@ -19,4 +19,4 @@ model:
         encoder:
           class_path: models.vit.ViT
 data:
-  class_path: datasets.cityscapes_semantic.CityscapesSemantic
+  class_path: data_modules.cityscapes_semantic.CityscapesSemantic
