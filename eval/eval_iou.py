@@ -3,12 +3,21 @@
 # Eduardo Romera
 #######################
 
+# python eval_iou.py --datadir /Users/francescodedominicis/Desktop/POLITO/Advanced_ML/Project/cityscapes --subset val
+# export KMP_DUPLICATE_LIB_OK=TRUE && python eval_iou.py --datadir /Users/francescodedominicis/Desktop/POLITO/Advanced_ML/Project/cityscapes --subset val
+
 import numpy as np
 import torch
 import torch.nn.functional as F
 import os
 import importlib
 import time
+
+# ### MAC FIX 1: Risolve il conflitto OpenMP (Error #15) ###
+os.environ["KMP_DUPLICATE_LIB_OK"] = "TRUE"
+
+# ### MAC FIX 2: Evita crash MKL limitando i thread ###
+torch.set_num_threads(1)
 
 from PIL import Image
 from argparse import ArgumentParser
@@ -18,10 +27,14 @@ from torch.utils.data import DataLoader
 from torchvision.transforms import Compose, CenterCrop, Normalize, Resize
 from torchvision.transforms import ToTensor, ToPILImage
 
+# Assicurati che questi file esistano nella cartella eval/
 from dataset import cityscapes
 from erfnet import ERFNet
 from transform import Relabel, ToLabel, Colorize
 from iouEval import iouEval, getColorEntry
+
+# ### MAC FIX 3: Definizione esplicita del device (CPU) ###
+device = torch.device("cpu")
 
 NUM_CHANNELS = 3
 NUM_CLASSES = 20
@@ -46,17 +59,27 @@ def main(args):
     print ("Loading weights: " + weightspath)
 
     model = ERFNet(NUM_CLASSES)
+    
+    # ### MAC FIX 4: Spostamento su CPU invece di CUDA ###
+    model = model.to(device)
 
-    #model = torch.nn.DataParallel(model)
-    if (not args.cpu):
-        model = torch.nn.DataParallel(model).cuda()
+    # ### MAC FIX 5: Disabilitato DataParallel ###
+    # DataParallel su CPU causa Segmentation Fault su macOS.
+    # model = torch.nn.DataParallel(model)
+    
+    # Il codice originale usava questo check per CUDA, lo commentiamo per sicurezza
+    # if (not args.cpu):
+    #     model = torch.nn.DataParallel(model).cuda()
 
     def load_my_state_dict(model, state_dict):  #custom function to load model when not all dict elements
         own_state = model.state_dict()
         for name, param in state_dict.items():
             if name not in own_state:
                 if name.startswith("module."):
-                    own_state[name.split("module.")[-1]].copy_(param)
+                    # Rimuove il prefisso 'module.' se presente (perché abbiamo tolto DataParallel)
+                    key = name.split("module.")[-1]
+                    if key in own_state:
+                         own_state[key].copy_(param)
                 else:
                     print(name, " not loaded")
                     continue
@@ -64,7 +87,8 @@ def main(args):
                 own_state[name].copy_(param)
         return model
 
-    model = load_my_state_dict(model, torch.load(weightspath, map_location=lambda storage, loc: storage))
+    # ### MAC FIX 6: map_location force to CPU ###
+    model = load_my_state_dict(model, torch.load(weightspath, map_location=device))
     print ("Model and weights LOADED successfully")
 
 
@@ -73,7 +97,7 @@ def main(args):
     if(not os.path.exists(args.datadir)):
         print ("Error: datadir could not be loaded")
 
-
+    # DataLoader inizializzato con i parametri args
     loader = DataLoader(cityscapes(args.datadir, input_transform_cityscapes, target_transform_cityscapes, subset=args.subset), num_workers=args.num_workers, batch_size=args.batch_size, shuffle=False)
 
 
@@ -82,9 +106,14 @@ def main(args):
     start = time.time()
 
     for step, (images, labels, filename, filenameGt) in enumerate(loader):
-        if (not args.cpu):
-            images = images.cuda()
-            labels = labels.cuda()
+        # ### MAC FIX 7: Spostamento tensori su CPU ###
+        images = images.to(device)
+        labels = labels.to(device)
+        
+        # Codice originale CUDA rimosso/commentato
+        # if (not args.cpu):
+        #    images = images.cuda()
+        #    labels = labels.cuda()
 
         inputs = Variable(images)
         with torch.no_grad():
@@ -101,6 +130,8 @@ def main(args):
 
     iou_classes_str = []
     for i in range(iou_classes.size(0)):
+        # getColorEntry potrebbe richiedere modifiche se usa codici colore non standard, 
+        # ma di solito è solo string formatting
         iouStr = getColorEntry(iou_classes[i])+'{:0.2f}'.format(iou_classes[i]*100) + '\033[0m'
         iou_classes_str.append(iouStr)
 
@@ -142,7 +173,9 @@ if __name__ == '__main__':
     parser.add_argument('--loadModel', default="erfnet.py")
     parser.add_argument('--subset', default="val")  #can be val or train (must have labels)
     parser.add_argument('--datadir', default="/home/shyam/ViT-Adapter/segmentation/data/cityscapes/")
-    parser.add_argument('--num-workers', type=int, default=4)
+    # ### MAC FIX 8: Default num-workers a 0 ###
+    # Multiprocessing su Mac è lento e instabile per questo task
+    parser.add_argument('--num-workers', type=int, default=0)
     parser.add_argument('--batch-size', type=int, default=1)
     parser.add_argument('--cpu', action='store_true')
 

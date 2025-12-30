@@ -1,0 +1,21 @@
+
+--- Processing Subset: RoadAnomaly21 [Temp=0.5] ---
+MSP       -> AUPRC: 27.06 | FPR@95: 62.73
+MaxLogit  -> AUPRC: 38.32 | FPR@95: 59.34
+Entropy   -> AUPRC: 28.58 | FPR@95: 62.72
+--------------------------------------------
+
+
+--- Processing Subset: RoadAnomaly21 [Temp=0.75] ---
+MSP       -> AUPRC: 28.16 | FPR@95: 62.49
+MaxLogit  -> AUPRC: 38.32 | FPR@95: 59.34
+Entropy   -> AUPRC: 30.12 | FPR@95: 62.44
+--------------------------------------------
+
+
+--- Processing Subset: RoadAnomaly21 [Temp=1.1] ---
+MSP       -> AUPRC: 29.40 | FPR@95: 62.65
+MaxLogit  -> AUPRC: 38.32 | FPR@95: 59.34
+Entropy   -> AUPRC: 31.13 | FPR@95: 62.90
+--------------------------------------------
+

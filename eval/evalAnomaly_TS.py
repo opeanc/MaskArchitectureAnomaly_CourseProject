@@ -19,8 +19,6 @@ from sklearn.metrics import roc_auc_score, roc_curve, auc, precision_recall_curv
 from torchvision.transforms import Compose, Resize, ToTensor, Normalize
 
 # IMPOSTAZIONE DEVICE: FORZIAMO CPU PER STABILITÀ SU MAC
-# Nota: Su Mac M1/M2/M3 si potrebbe usare "mps", ma per compatibilità con 
-# le operazioni supportate da ERFNet e NumPy, la CPU è la scelta più sicura per evitare crash.
 device = torch.device("cpu")
 
 seed = 42
@@ -33,7 +31,6 @@ torch.manual_seed(seed)
 NUM_CHANNELS = 3
 NUM_CLASSES = 20
 
-# gpu training specific - Disabilitato su Mac per evitare errori
 if torch.cuda.is_available():
     torch.backends.cudnn.deterministic = True
     torch.backends.cudnn.benchmark = True
@@ -65,11 +62,15 @@ def main():
     parser.add_argument('--loadDir', default="../trained_models/")
     parser.add_argument('--loadWeights', default="erfnet_pretrained.pth")
     parser.add_argument('--loadModel', default="erfnet.py")
-    parser.add_argument('--subset', default="val")  #can be val or train (must have labels)
+    parser.add_argument('--subset', default="val") 
     parser.add_argument('--datadir', default="/home/shyam/ViT-Adapter/segmentation/data/cityscapes/")
-    parser.add_argument('--num-workers', type=int, default=0) # Default a 0 per evitare crash multiprocesso su Mac
+    parser.add_argument('--num-workers', type=int, default=0) 
     parser.add_argument('--batch-size', type=int, default=1)
     parser.add_argument('--cpu', action='store_true')
+    
+    # --- NUOVO ARGOMENTO TEMPERATURE SCALING ---
+    parser.add_argument('--temperature', type=float, default=1.0, 
+                        help='Temperature scaling value (default=1.0 which means no scaling)')
     
     args = parser.parse_args()
     
@@ -79,28 +80,24 @@ def main():
     
     ood_gts_list = []
 
-    if not os.path.exists('results.txt'):
-        open('results.txt', 'w').close()
-    file = open('results.txt', 'a')
+    if not os.path.exists('results_TS.txt'):
+        open('results_TS.txt', 'w').close()
+    file = open('results_TS.txt', 'a')
 
     modelpath = args.loadDir + args.loadModel
     weightspath = args.loadDir + args.loadWeights
 
     print("Loading model: " + modelpath)
     print("Loading weights: " + weightspath)
+    print(f"Using Temperature: {args.temperature}")
 
-    # Inizializza il modello
     model = ERFNet(NUM_CLASSES)
-    
-    # FIX MAC: Rimosso DataParallel. 
-    # DataParallel su CPU causa spesso Segmentation Fault su macOS.
     model = model.to(device)
 
-    def load_my_state_dict(model, state_dict):  #custom function to load model when not all dict elements
+    def load_my_state_dict(model, state_dict): 
         own_state = model.state_dict()
         for name, param in state_dict.items():
             if name not in own_state:
-                # Gestione del prefisso "module." inserito da DataParallel durante il training
                 if name.startswith("module."):
                     key = name.split("module.")[-1]
                     if key in own_state:
@@ -112,13 +109,10 @@ def main():
                 own_state[name].copy_(param)
         return model
 
-    # Caricamento pesi con map_location forzato su CPU
     model = load_my_state_dict(model, torch.load(weightspath, map_location=device))
-    
     print("Model and weights LOADED successfully")
     model.eval()
     
-    # Gestione input: se l'utente passa una stringa glob o una lista di file
     input_files = args.input
     if len(input_files) == 1 and ('*' in input_files[0] or '?' in input_files[0]):
         file_list = glob.glob(os.path.expanduser(input_files[0]))
@@ -131,58 +125,47 @@ def main():
         print(f"Processing: {path}")
         
         try:
-            # Caricamento e trasformazione immagine
             img = Image.open(path).convert('RGB')
             images = input_transform(img).unsqueeze(0).float().to(device)
             
-            # Inferenza SENZA calcolo gradienti (risparmia RAM ed evita crash)
             with torch.no_grad():
-                result = model(images)
+                # 1. Otteniamo i Logits (Tensor PyTorch)
+                result = model(images) 
+                
+                # --- APPLICAZIONE TEMPERATURE SCALING ---
+                # Dividiamo i logits per T prima della softmax.
+                # Questo influenza MSP e Entropia. Non influenza MaxLogit (solo scala).
+                scaled_result = result / args.temperature
 
-            ### BY ME =================================
-            # calcolo la probabilità (softmax)
-            probs = torch.nn.functional.softmax(result, dim=1)
+                # 2. Calcoliamo le Probabilità (Softmax) sui logits scalati
+                probs = torch.nn.functional.softmax(scaled_result, dim=1)
 
-            # Spostiamo su CPU e convertiamo in numpy
-            logits_np = result.squeeze(0).data.cpu().numpy()
-            probs_np = probs.squeeze(0).data.cpu().numpy()
+                # Spostiamo su CPU e convertiamo in numpy
+                # Usiamo i logits ORIGINALI per MaxLogit (per purezza, anche se il ranking non cambia)
+                logits_np = result.squeeze(0).data.cpu().numpy()
+                probs_np = probs.squeeze(0).data.cpu().numpy()
 
             # ==========================================
             # METODO 1: MSP (Baseline Classica)
             # ==========================================
-            # Formula: 1 - max(probabilità)
             msp_score = 1.0 - np.max(probs_np, axis=0)
 
             # ==========================================
             # METODO 2: Max Logit
             # ==========================================
-            # Formula: - max(logit)
             max_logit_score = - np.max(logits_np, axis=0)
 
             # ==========================================
             # METODO 3: Max Entropy
             # ==========================================
-            # Formula: - somma(p * log(p))
-            # Aggiungiamo 1e-8 per evitare log(0) che darebbe errore
             entropy_score = -np.sum(probs_np * np.log(probs_np + 1e-8), axis=0)
 
-            # ==========================================
-            # SELEZIONE OUTPUT
-            # ==========================================
-            # Qui decidi quale dei tre vuoi testare ora.
-            # Per riempire la tabella, dovrai far girare il codice 3 volte cambiando questa riga,
-            # oppure salvare 3 file di risultati diversi.
             
             msp_anomaly_result = msp_score
             maxlogit_anomaly_result = max_logit_score
             entropy_anomaly_result = entropy_score
             
-            # ==========================================
-            
-            # # Post-processing
-            # anomaly_result = 1.0 - np.max(result.squeeze(0).data.cpu().numpy(), axis=0)            
-            
-            # Logica per trovare la Ground Truth corrispondente
+            # Logica Ground Truth (invariata)
             pathGT = path.replace("images", "labels_masks")                
             if "RoadObsticle21" in pathGT:
                pathGT = pathGT.replace("webp", "png")
@@ -199,7 +182,6 @@ def main():
             mask = target_transform(mask)
             ood_gts = np.array(mask)
 
-            # Adattamento etichette in base al dataset
             if "RoadAnomaly" in pathGT:
                 ood_gts = np.where((ood_gts==2), 1, ood_gts)
             if "LostAndFound" in pathGT:
@@ -219,7 +201,6 @@ def main():
                 maxlogit_anomaly_score_list.append(maxlogit_anomaly_result)
                 entropy_anomaly_score_list.append(entropy_anomaly_result)
             
-            # Pulizia memoria manuale
             del result, msp_anomaly_result, max_logit_score, entropy_anomaly_result, ood_gts, mask
             
         except Exception as e:
@@ -233,7 +214,6 @@ def main():
         return
     
     # === MSP RESULTS ===
-
     print("Calculating metrics with msp for dataset: " + args.subset)
     ood_gts = np.array(ood_gts_list)
     anomaly_scores = np.array(msp_anomaly_score_list)
@@ -255,7 +235,6 @@ def main():
 
     print(f'AUPRC score: {prc_auc_msp*100.0}')
     print(f'FPR@TPR95: {fpr_msp*100.0}')
-
 
     # === MAX LOGIT RESULTS ===
     print("Calculating metrics with Max Logit for dataset: " + args.subset)
@@ -279,8 +258,7 @@ def main():
     print(f'AUPRC score: {prc_auc_entropy*100.0}')
     print(f'FPR@TPR95: {fpr_entropy*100.0}')
 
-
-    file.write(f"--- Processing Subset: {args.subset} ---\n")
+    file.write(f"--- Processing Subset: {args.subset} [Temp={args.temperature}] ---\n")
     file.write(f"MSP       -> AUPRC: {prc_auc_msp*100.0:.2f} | FPR@95: {fpr_msp*100.0:.2f}\n")
     file.write(f"MaxLogit  -> AUPRC: {prc_auc_logit*100.0:.2f} | FPR@95: {fpr_logit*100.0:.2f}\n")
     file.write(f"Entropy   -> AUPRC: {prc_auc_entropy*100.0:.2f} | FPR@95: {fpr_entropy*100.0:.2f}\n")
