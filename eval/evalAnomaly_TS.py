@@ -1,6 +1,3 @@
-# Copyright (c) OpenMMLab. All rights reserved.
-
-# for macos - FIX CRITICO PER OPENMP
 import os
 os.environ["KMP_DUPLICATE_LIB_OK"] = "TRUE"
 
@@ -18,7 +15,9 @@ from ood_metrics import fpr_at_95_tpr, calc_metrics, plot_roc, plot_pr, plot_bar
 from sklearn.metrics import roc_auc_score, roc_curve, auc, precision_recall_curve, average_precision_score
 from torchvision.transforms import Compose, Resize, ToTensor, Normalize
 
-# IMPOSTAZIONE DEVICE: FORZIAMO CPU PER STABILITÀ SU MAC
+"""
+NB: this script only relies on CPU for compatibility with SoC systems.
+"""
 device = torch.device("cpu")
 
 seed = 42
@@ -67,8 +66,7 @@ def main():
     parser.add_argument('--num-workers', type=int, default=0) 
     parser.add_argument('--batch-size', type=int, default=1)
     parser.add_argument('--cpu', action='store_true')
-    
-    # --- NUOVO ARGOMENTO TEMPERATURE SCALING ---
+    # new arg: temp    
     parser.add_argument('--temperature', type=float, default=1.0, 
                         help='Temperature scaling value (default=1.0 which means no scaling)')
     
@@ -129,43 +127,34 @@ def main():
             images = input_transform(img).unsqueeze(0).float().to(device)
             
             with torch.no_grad():
-                # 1. Otteniamo i Logits (Tensor PyTorch)
+                # compute logits
                 result = model(images) 
                 
-                # --- APPLICAZIONE TEMPERATURE SCALING ---
-                # Dividiamo i logits per T prima della softmax.
-                # Questo influenza MSP e Entropia. Non influenza MaxLogit (solo scala).
+                # apply temperature scaling
                 scaled_result = result / args.temperature
 
-                # 2. Calcoliamo le Probabilità (Softmax) sui logits scalati
+                # compute probabilities with softmax
                 probs = torch.nn.functional.softmax(scaled_result, dim=1)
 
-                # Spostiamo su CPU e convertiamo in numpy
-                # Usiamo i logits ORIGINALI per MaxLogit (per purezza, anche se il ranking non cambia)
+                # move to CPU and convert to numpy
                 logits_np = result.squeeze(0).data.cpu().numpy()
                 probs_np = probs.squeeze(0).data.cpu().numpy()
 
-            # ==========================================
-            # METODO 1: MSP (Baseline Classica)
-            # ==========================================
+            # msp
             msp_score = 1.0 - np.max(probs_np, axis=0)
 
-            # ==========================================
-            # METODO 2: Max Logit
-            # ==========================================
+            # msx logit
             max_logit_score = - np.max(logits_np, axis=0)
 
-            # ==========================================
-            # METODO 3: Max Entropy
-            # ==========================================
+            # max entropy
             entropy_score = -np.sum(probs_np * np.log(probs_np + 1e-8), axis=0)
 
             
             msp_anomaly_result = msp_score
             maxlogit_anomaly_result = max_logit_score
             entropy_anomaly_result = entropy_score
-            
-            # Logica Ground Truth (invariata)
+
+            # Load Ground Truth mask            
             pathGT = path.replace("images", "labels_masks")                
             if "RoadObsticle21" in pathGT:
                pathGT = pathGT.replace("webp", "png")
@@ -213,7 +202,7 @@ def main():
         print("No valid images processed or no anomalies found in GT.")
         return
     
-    # === MSP RESULTS ===
+    # msp results
     print("Calculating metrics with msp for dataset: " + args.subset)
     ood_gts = np.array(ood_gts_list)
     anomaly_scores = np.array(msp_anomaly_score_list)
@@ -236,7 +225,7 @@ def main():
     print(f'AUPRC score: {prc_auc_msp*100.0}')
     print(f'FPR@TPR95: {fpr_msp*100.0}')
 
-    # === MAX LOGIT RESULTS ===
+    # max logit results
     print("Calculating metrics with Max Logit for dataset: " + args.subset)
     anomaly_scores = np.array(maxlogit_anomaly_score_list)
     ood_out = anomaly_scores[ood_mask]
@@ -247,7 +236,7 @@ def main():
     print(f'AUPRC score: {prc_auc_logit*100.0}')
     print(f'FPR@TPR95: {fpr_logit*100.0}')
 
-    # === ENTROPY RESULTS ===
+    # entropy results
     print("Calculating metrics with Entropy for dataset: " + args.subset)
     anomaly_scores = np.array(entropy_anomaly_score_list)
     ood_out = anomaly_scores[ood_mask]

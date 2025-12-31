@@ -1,8 +1,25 @@
-# Code to calculate IoU (mean and per-class) in a dataset
-# Optimized for Multi-Temperature Evaluation on Mac
-#######################
-
 # python eval_iou.py --datadir /Users/francescodedominicis/Desktop/POLITO/Advanced_ML/Project/cityscapes --subset val
+
+"""
+this is a proof of concept: mIoU is not affected by temperature scaling.
+
+This is because of the fact that temp scaling only affects the confidence associated with
+each prediction, not the predicted class itself.
+
+e.g.
+1. w.o. scaling (T=1.0): [5.0, 3.0, 1.0]
+   - Predicted Class: 0 (Value 5.0 is max)
+   - Confidence = 0.866 (great confidence)
+
+2. Sharpening (T=0.5): [10.0, 6.0, 2.0]
+   - Predicted Class: 0 (Value 10.0 is still max)
+   - Confidence = 0.982 (high confidence)
+
+3. Smoothing (T=2.0): [2.5, 1.5, 0.5]
+   - Predicted Class: 0 (Value 2.5 is still max)
+   - Confidence = 0.665 (low confidence)
+
+"""
 
 import numpy as np
 import torch
@@ -10,9 +27,7 @@ import torch.nn.functional as F
 import os
 import time
 
-# ### MAC FIX 1: Risolve il conflitto OpenMP ###
 os.environ["KMP_DUPLICATE_LIB_OK"] = "TRUE"
-# ### MAC FIX 2: Threading limit ###
 torch.set_num_threads(1)
 
 from PIL import Image
@@ -20,14 +35,14 @@ from argparse import ArgumentParser
 from torch.autograd import Variable
 from torch.utils.data import DataLoader
 from torchvision.transforms import Compose, Resize, ToTensor, ToPILImage
-
-# Assicurati che questi import funzionino nel tuo path
 from dataset import cityscapes
 from erfnet import ERFNet
 from transform import Relabel, ToLabel
 from iouEval import iouEval, getColorEntry
 
-# ### MAC FIX 3: CPU Device ###
+"""
+NB: this script only relies on CPU for compatibility with SoC systems.
+"""
 device = torch.device("cpu")
 
 NUM_CHANNELS = 3
@@ -50,7 +65,7 @@ def main(args):
     print(f"Loading model: {modelpath}")
     print(f"Loading weights: {weightspath}")
 
-    # --- DEFINIZIONE TEMPERATURE ---
+    # temperatures to evaluate
     temperature_list = [0.5, 0.75, 1.0, 1.1]
     print(f"Evaluating Temperatures: {temperature_list}")
 
@@ -80,8 +95,9 @@ def main(args):
     loader = DataLoader(cityscapes(args.datadir, input_transform_cityscapes, target_transform_cityscapes, subset=args.subset), 
                         num_workers=args.num_workers, batch_size=args.batch_size, shuffle=False)
 
-    # --- Creiamo un valutatore per OGNI temperatura ---
-    # Usiamo un dizionario per tenerli separati: {0.5: iouEval(...), 1.0: iouEval(...)}
+
+    # for each temp initialize a separate IoU evaluator
+    # this allows to compute all metrics in a single pass over the data
     evaluators = {t: iouEval(NUM_CLASSES) for t in temperature_list}
 
     start = time.time()
@@ -95,18 +111,18 @@ def main(args):
         inputs = Variable(images)
         
         with torch.no_grad():
-            # 1. Inferenza PESANTE (fatta una volta sola)
+            # inference
             logits = model(inputs)
 
-            # 2. Loop LEGGERO sulle temperature
+            # loop on temps
             for t in temperature_list:
-                # Applica scaling
+                # apply scaling
                 scaled_logits = logits / t
                 
-                # Calcola la classe vincente (argmax)
+                # compute winning class
                 preds = scaled_logits.max(1)[1].unsqueeze(1).data
                 
-                # Aggiorna il valutatore specifico per questa temperatura
+                # update evaluator
                 evaluators[t].addBatch(preds, labels)
 
         if step % 10 == 0:
@@ -117,7 +133,7 @@ def main(args):
     print("Took ", time.time()-start, "seconds")
     print("=======================================")
     
-    # --- STAMPA COMPATTA FINALE ---
+    # Final mIoU summary
     print("\n\n#######################################")
     print("       FINAL mIoU SUMMARY")
     print("#######################################")
@@ -132,7 +148,7 @@ def main(args):
     
     print("#######################################\n")
 
-    # Dettaglio per T=1.0 (Baseline)
+    # Detailed per-class IoU for baseline (T=1.0)
     print("Detailed Class IoU for T=1.0 (Baseline):")
     _, iou_classes_1 = evaluators[1.0].getIoU()
     classes_names = ['Road', 'Sidewalk', 'Building', 'Wall', 'Fence', 'Pole', 'Traffic Light', 

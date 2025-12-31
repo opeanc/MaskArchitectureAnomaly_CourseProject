@@ -1,61 +1,3 @@
-
---- Processing Subset: RoadAnomaly21 [Temp=0.5] ---
-MSP       -> AUPRC: 27.06 | FPR@95: 62.73
-MaxLogit  -> AUPRC: 38.32 | FPR@95: 59.34
-Entropy   -> AUPRC: 28.58 | FPR@95: 62.72
---------------------------------------------
-
-
---- Processing Subset: RoadAnomaly21 [Temp=0.75] ---
-MSP       -> AUPRC: 28.16 | FPR@95: 62.49
-MaxLogit  -> AUPRC: 38.32 | FPR@95: 59.34
-Entropy   -> AUPRC: 30.12 | FPR@95: 62.44
---------------------------------------------
-
-
---- Processing Subset: RoadAnomaly21 [Temp=1.1] ---
-MSP       -> AUPRC: 29.40 | FPR@95: 62.65
-MaxLogit  -> AUPRC: 38.32 | FPR@95: 59.34
-Entropy   -> AUPRC: 31.13 | FPR@95: 62.90
---------------------------------------------
-
-
-
-// 30/12
-
-
---- Processing Subset: RoadAnomaly21 [Temp=0.5] ---
-MSP       -> AUPRC: 27.06 | FPR@95: 62.73
-MaxLogit  -> AUPRC: 38.32 | FPR@95: 59.34
-Entropy   -> AUPRC: 28.58 | FPR@95: 62.72
---------------------------------------------
-
-
---- Processing Subset: RoadAnomaly21 [Temp=0.75] ---
-MSP       -> AUPRC: 28.16 | FPR@95: 62.49
-MaxLogit  -> AUPRC: 38.32 | FPR@95: 59.34
-Entropy   -> AUPRC: 30.12 | FPR@95: 62.44
---------------------------------------------
-
-
---- Processing Subset: RoadAnomaly21 [Temp=1.0] ---
-MSP       -> AUPRC: 29.10 | FPR@95: 62.55
-MaxLogit  -> AUPRC: 38.32 | FPR@95: 59.34
-Entropy   -> AUPRC: 30.97 | FPR@95: 62.66
---------------------------------------------
-
-
---- Processing Subset: RoadAnomaly21 [Temp=1.1] ---
-MSP       -> AUPRC: 29.40 | FPR@95: 62.65
-MaxLogit  -> AUPRC: 38.32 | FPR@95: 59.34
-Entropy   -> AUPRC: 31.13 | FPR@95: 62.90
---------------------------------------------
-
-
-
-// complete results 
-
-
 --- Processing Subset: FS_LostFound_full [Temp=0.5] ---
 MSP       -> AUPRC: 1.28 | FPR@95: 66.74
 MaxLogit  -> AUPRC: 3.30 | FPR@95: 45.49
@@ -234,3 +176,12 @@ Bus            : 78.87%
 Train          : 63.86%
 Motorcycle     : 46.40%
 Bicycle        : 71.89%
+
+
+
+
+
+RESULTS COMMENT
+
+
+
