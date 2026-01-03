@@ -166,27 +166,48 @@ def main():
     print ("Model and weights LOADED successfully")
     model.eval()
 
-    def calculate_rba_score(mask_logits, class_logits):
-        # on all the 20 classes
-        probs = F.softmax(class_logits, dim=-1)
-        
-        # known classes
-        p_known = probs[:, :, :-1] 
-        # null class
-        p_null = probs[:, :, -1]
-        
-        # Un pixel è anomalo se:
-        # - low likelihood for known classes (1 - max_p_known)
-        # - AND the model it's not confident it is the background (1 - p_null)
-        # Rejected by All (known classes AND background)
-        max_p_known, _ = torch.max(p_known, dim=-1)
-        rejection_score = (1.0 - max_p_known) * (1.0 - p_null)
-        
-        masks = mask_logits.sigmoid()
-        rba_map = torch.einsum("bqhw, bq -> bqhw", masks, rejection_score)
-        rba_map = torch.sum(rba_map, dim=1) / (torch.sum(masks, dim=1) + 1e-10)
-        
-        return rba_map
+    def score_rba(mask_probs, class_probs, mask_th=0.5, class_th=0.5, reduce="max"):
+        """
+        mask_probs:  [Q, H, W]          (sigmoid)
+        class_probs: [Q, C+1]           (softmax, last = no-object)
+
+        Returns:
+            anomaly_map: [H, W] (float, higher = more anomalous)
+        """
+
+        # 1. splits ID vs no-object
+        id_probs, _ = class_probs[:, :-1].max(dim=1)  # [Q]
+        noobj_probs = class_probs[:, -1]               # [Q]
+
+        # 2. filters useless queries (fondamental)
+        keep = (noobj_probs < 0.5) & (id_probs > class_th)
+        if keep.sum() == 0:
+            # tutte le query rifiutano → tutto OOD
+            return torch.ones(mask_probs.shape[1:], device=mask_probs.device)
+
+        mask_probs = mask_probs[keep]
+        id_probs = id_probs[keep]
+
+        # 3. spatal gating
+        valid = mask_probs > mask_th
+        pixel_acceptance = torch.where(
+            valid,
+            id_probs[:, None, None] * mask_probs,
+            torch.zeros_like(mask_probs),
+        )
+
+        # 4. RbA aggregation
+        if reduce == "max":
+            acceptance = pixel_acceptance.max(dim=0)[0]
+        elif reduce == "mean":
+            acceptance = pixel_acceptance.mean(dim=0)
+        else:
+            raise ValueError("reduce must be 'max' or 'mean'")
+
+        # 5. rejection score
+        anomaly_map = 1.0 - acceptance
+        return anomaly_map
+
     
     for path in glob.glob(os.path.expanduser(str(args.input[0]))):
         print(path)
@@ -221,9 +242,12 @@ def main():
             # MaxEntropy
             anomaly_result_MaxEntropy = - torch.sum(full_probs * torch.log(full_probs + 1e-10), dim=1).squeeze().cpu().numpy()
             # RbA
-            rba_crops = calculate_rba_score(m_logits, c_logits).unsqueeze(1)
-            full_rba = torch.cat([rba_crops[0:1], rba_crops[1:2]], dim=-1) # [1, 1, H_small, W_tot]
-            # unsample to (1024x2048)
+            mask_probs_all = m_logits.sigmoid()
+            class_probs_all = c_logits.softmax(dim=-1) # keeping the null class!
+            rba_left = score_rba(mask_probs_all[0], class_probs_all[0])   # [1024, 1024]
+            rba_right = score_rba(mask_probs_all[1], class_probs_all[1])  # [1024, 1024]
+            full_rba = torch.cat([rba_left.unsqueeze(0).unsqueeze(0), 
+                                  rba_right.unsqueeze(0).unsqueeze(0)], dim=-1)
             full_rba = F.interpolate(full_rba, size=(1024, 2048), mode="bilinear", align_corners=False)
             anomaly_result_RbA = full_rba.squeeze().cpu().numpy()
 
