@@ -1,6 +1,7 @@
 import os
 os.environ["KMP_DUPLICATE_LIB_OK"] = "TRUE"
-
+current_dir = os.path.dirname(os.path.abspath(__file__))
+weightspath = os.path.abspath(os.path.join(current_dir, "..", "trained_models", "eomt_cityscapes.bin"))
 import cv2
 import glob
 import torch
@@ -14,7 +15,19 @@ from argparse import ArgumentParser
 from sklearn.metrics import average_precision_score
 from torchvision.transforms import Compose, Resize, ToTensor, Normalize
 import gc
+import torch.nn.functional as F
 from ood_metrics import fpr_at_95_tpr 
+project_root = os.path.abspath(os.path.join(os.path.dirname(__file__), '..'))
+eomt_path = os.path.join(project_root, 'eomt')
+import sys
+if project_root not in sys.path:
+    sys.path.append(project_root)
+if eomt_path not in sys.path:
+    sys.path.append(eomt_path)
+from eomt.models.vit import ViT
+from eomt.models.eomt import EoMT
+import yaml
+import importlib
 
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
@@ -38,6 +51,29 @@ input_transform = Compose([
 target_transform = Compose([
     Resize((512, 1024), Image.NEAREST),
 ])
+
+def to_per_pixel_logits_semantic(mask_logits, class_logits):
+    # merge transformer's queries and masks
+    # Sigmoid(mask) * Softmax(class)
+    return torch.einsum(
+        "bqhw, bqc -> bchw",
+        mask_logits.sigmoid(),
+        class_logits.softmax(dim=-1)[..., :-1], # Esclude l'ultima classe 'null'
+    )
+
+def window_inference(model, img, img_size=(640, 640)):
+    x = img.float() / 255.0 if img.max() > 1.0 else img.float()
+    
+    # cropping
+    # left piece (0:1024), righe piece (1024:2048)
+    crops = torch.cat([x[:, :, :, 0:1024], x[:, :, :, 1024:2048]], dim=0) # [2, 3, 512, 512]
+    
+    mask_logits_list, class_logits_list = model(crops)
+    
+    mask_logits = mask_logits_list[-1] # [2, 100, H_m, W_m]
+    class_logits = class_logits_list[-1] # [2, 100, 20]
+    
+    return mask_logits, class_logits
 
 def load_ground_truth(path, target_transform):
     """Helper function to load and process masks consistent with RoadObstacle21/LostAndFound"""
@@ -82,8 +118,8 @@ def main():
     args = parser.parse_args()
     
     # Setup Output File
-    if not os.path.exists('results_TS.txt'): open('results_TS.txt', 'w').close()
-    file = open('results_TS.txt', 'a')
+    if not os.path.exists('results_TS_eomt.txt'): open('results_TS_eomt.txt', 'w').close()
+    file = open('results_TS_eomt.txt', 'a')
 
     # Load Model
     modelpath = args.loadDir + args.loadModel
@@ -92,27 +128,57 @@ def main():
     print("Loading weights: " + weightspath)
     print(f"Using Temperature: {args.temperature}")
 
-    model = ERFNet(NUM_CLASSES).to(device)
-    
-    def load_my_state_dict(model, state_dict): 
+    config_path = os.path.join(project_root, "eomt", "configs", "dinov2", "cityscapes", "semantic", "eomt_base_640.yaml")
+    with open(config_path, "r") as f:
+        config = yaml.safe_load(f)
+    # encoder instance (ViT-Adapter)
+    encoder_cfg = config["model"]["init_args"]["network"]["init_args"]["encoder"]
+    encoder_module_name, encoder_class_name = encoder_cfg["class_path"].rsplit(".", 1)
+    encoder_cls = getattr(importlib.import_module(encoder_module_name), encoder_class_name)
+    # 1024x1024
+    encoder = encoder_cls(img_size=(1024, 1024), **encoder_cfg.get("init_args", {}))
+
+    # network instance (EoMT)
+    network_cfg = config["model"]["init_args"]["network"]
+    network_module_name, network_class_name = network_cfg["class_path"].rsplit(".", 1)
+    network_cls = getattr(importlib.import_module(network_module_name), network_class_name)
+    network_kwargs = {k: v for k, v in network_cfg["init_args"].items() if k != "encoder"}
+    model = network_cls(
+        masked_attn_enabled=False,
+        num_classes=19,
+        encoder=encoder,
+        **network_kwargs,
+    )
+
+    if (not args.cpu):
+        model = torch.nn.DataParallel(model).cuda()
+
+    def load_my_state_dict(model, state_dict):
         own_state = model.state_dict()
         for name, param in state_dict.items():
-            if name not in own_state:
-                if name.startswith("module."):
-                    key = name.split("module.")[-1]
-                    if key in own_state:
-                        own_state[key].copy_(param)
-                else:
-                    print(name, " not loaded")
-                    continue
-            else:
-                own_state[name].copy_(param)
+            # removing network. and module.
+            clean_name = name.replace("network.", "").replace("module.", "")
+            
+            found = False
+            for k_model in own_state.keys():
+                if k_model == clean_name or k_model.endswith(clean_name):
+                    if own_state[k_model].shape == param.shape:
+                        own_state[k_model].copy_(param)
+                        found = True
+                        break
+            
+            if not found and "criterion" not in name:
+                print(f"Parameter not found in the model: {name}")
+                
         return model
 
-    model = load_my_state_dict(model, torch.load(weightspath, map_location=device))
-    print("Model and weights LOADED successfully")
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    checkpoint = torch.load(weightspath, map_location=device)
+    state_dict = checkpoint['state_dict'] if 'state_dict' in checkpoint else checkpoint
+    model = load_my_state_dict(model, state_dict)
+    print ("Model and weights LOADED successfully")
     model.eval()
-    
+
     # Prepare File List
     input_files = args.input
     if len(input_files) == 1 and ('*' in input_files[0] or '?' in input_files[0]):
@@ -135,10 +201,26 @@ def main():
                 images = input_transform(img).unsqueeze(0).float().to(device)
                 
                 with torch.no_grad():
-                    logits = model(images)
-                    
-                    scaled_logits = logits / args.temperature
-                    probs = torch.softmax(scaled_logits, dim=1)
+                    net = model.module if hasattr(model, 'module') else model
+                    m_logits, c_logits = window_inference(net, images)
+
+                    # semantic fusion (Sigmoid * Softmax)
+                    pixel_logits_crops = to_per_pixel_logits_semantic(m_logits, c_logits)
+
+                    # stitching
+                    # 1024x1024 | 1024x1024 -> 1024x2048
+                    full_logits = torch.cat([pixel_logits_crops[0:1], pixel_logits_crops[1:2]], dim=-1)
+
+                    # upsample
+                    full_logits = F.interpolate(
+                        full_logits, 
+                        size=(1024, 2048),
+                        mode="bilinear", 
+                        align_corners=False
+                    )
+
+                    scaled_logits = full_logits / args.temperature
+                    probs = F.softmax(scaled_logits, dim=1)
                     
                     probs_np = probs.squeeze(0).cpu().numpy()   # (20, H, W)
                 
@@ -173,14 +255,14 @@ def main():
             print("No valid data found to calculate metrics.")
 
     # -------------------------------------------------------------------------
-    # MODALITÀ 2: BEST TEMPERATURE SEARCH
+    # MODALITÀ 2: BEST TEMPERATURE SEARCH (EoMT Adapted)
     # -------------------------------------------------------------------------
     else:
-        print("\n--- MODE: BEST TEMPERATURE SEARCH ---")
+        print("\n--- MODE: BEST TEMPERATURE SEARCH - EoMT ---")
         all_logits_list = []
         all_labels_list = []
 
-        print("Extracting logits from model...")
+        print("Extracting logits from model (EoMT Inference)...")
         for i, path in enumerate(file_list):
             if i % 10 == 0: print(f"   Image {i}/{len(file_list)}")
             
@@ -193,10 +275,29 @@ def main():
                 images = input_transform(img).unsqueeze(0).float().to(device)
 
                 with torch.no_grad():
-                    logits = model(images) # (1, 20, 512, 1024)
+                    # --- EoMT INFERENCE LOGIC START ---
+                    net = model.module if hasattr(model, 'module') else model
+                    m_logits, c_logits = window_inference(net, images)
+
+                    # semantic fusion
+                    pixel_logits_crops = to_per_pixel_logits_semantic(m_logits, c_logits)
+
+                    # stitching
+                    full_logits = torch.cat([pixel_logits_crops[0:1], pixel_logits_crops[1:2]], dim=-1)
+
+                    # upsample
+                    full_logits = F.interpolate(
+                        full_logits, 
+                        size=(1024, 2048),
+                        mode="bilinear", 
+                        align_corners=False
+                    ) # [1, 19, 1024, 2048]
+                    # --- EoMT INFERENCE LOGIC END ---
                     
                     # Flattening spaziale per salvare RAM e CPU
-                    logits_flat = logits.squeeze(0).permute(1, 2, 0).reshape(-1, NUM_CLASSES).cpu().numpy()
+                    # Usiamo full_logits.shape[1] per gestire le classi (dovrebbe essere 19)
+                    num_cls = full_logits.shape[1]
+                    logits_flat = full_logits.squeeze(0).permute(1, 2, 0).reshape(-1, num_cls).cpu().numpy()
                     
                 # Flatten mask
                 mask_flat = ood_gts.flatten()
@@ -217,7 +318,7 @@ def main():
         gc.collect()
         print("Model deleted from GPU to free RAM.")
 
-        print("Concatenating Arrays (Memory Intensive)...")
+        print("Concatenating Arrays...")
         if len(all_logits_list) == 0:
             print("No valid data found.")
             return
