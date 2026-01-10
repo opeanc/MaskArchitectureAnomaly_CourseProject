@@ -44,6 +44,8 @@ input_transform = Compose(
     [
         Resize((1024, 2048), Image.BILINEAR),
         ToTensor(),
+        Normalize(mean=[123.675/255, 116.280/255, 103.530/255], 
+                  std=[58.395/255, 57.120/255, 57.375/255])
     ]
 )
 
@@ -96,6 +98,8 @@ def main():
     parser.add_argument('--num-workers', type=int, default=4)
     parser.add_argument('--batch-size', type=int, default=1)
     parser.add_argument('--cpu', action='store_true')
+    parser.add_argument('--temperature', type=float, default=1000.0, help='temperature scaling')
+    parser.add_argument('--epsilon', type=float, default=0.0014, help='ODIN perturbation magnitude')
     args = parser.parse_args()
     anomaly_score_list = {
         "MSP": list(),
@@ -211,41 +215,75 @@ def main():
     
     for path in glob.glob(os.path.expanduser(str(args.input[0]))):
         print(path)
+
         images = input_transform((Image.open(path).convert('RGB'))).unsqueeze(0).float().cuda()
-        #images = images.permute(0,3,1,2)
+        images.requires_grad = True 
+
+        # ODIN forward pass
+        net = model.module if hasattr(model, 'module') else model
+        
+        # inference
+        m_logits, c_logits = window_inference(net, images)
+        pixel_logits_crops = to_per_pixel_logits_semantic(m_logits, c_logits)
+        full_logits = torch.cat([pixel_logits_crops[0:1], pixel_logits_crops[1:2]], dim=-1)
+        full_logits = F.interpolate(full_logits, size=(1024, 2048), mode="bilinear", align_corners=False)
+        
+        # ODIN loss
+        pred_labels = full_logits.argmax(dim=1)
+        pred_scores = full_logits.gather(1, pred_labels.unsqueeze(1)).squeeze(1)
+        loss = -torch.log(pred_scores + 1e-10).mean()
+        loss.backward()
+
+        gradient_sign = images.grad.data.sign()
+        
+        # adding noise
+        images_perturbed = images - (args.epsilon * gradient_sign)
+        images_perturbed = images_perturbed.detach()
+        
+        model.zero_grad()
+        if images.grad is not None:
+            images.grad.zero_()
+        del full_logits, m_logits, c_logits, pixel_logits_crops, loss
+        
         with torch.no_grad():
-            net = model.module if hasattr(model, 'module') else model
-            m_logits, c_logits = window_inference(net, images)
+            m_logits, c_logits = window_inference(net, images_perturbed)
 
-            # semantic fusion (Sigmoid * Softmax)
-            pixel_logits_crops = to_per_pixel_logits_semantic(m_logits, c_logits)
+            # 1. Semantic fusion
+            pixel_probs_crops = to_per_pixel_logits_semantic(m_logits, c_logits)
 
-            # stitching
-            # 1024x1024 | 1024x1024 -> 1024x2048
-            full_logits = torch.cat([pixel_logits_crops[0:1], pixel_logits_crops[1:2]], dim=-1)
+            # 2. Stitching
+            # Nota: pixel_probs_crops sono già "quasi" probabilità (sigmoid * softmax)
+            full_probs_small = torch.cat([pixel_probs_crops[0:1], pixel_probs_crops[1:2]], dim=-1)
 
-            # upsample
-            full_logits = F.interpolate(
-                full_logits, 
+            # 3. Upsample UNICO per tutto
+            # Usiamo full_probs_upsampled per TUTTE le metriche
+            full_probs_upsampled = F.interpolate(
+                full_probs_small, 
                 size=(1024, 2048),
                 mode="bilinear", 
                 align_corners=False
             )
-
-            full_probs = F.softmax(full_logits, dim=1)
             
+            # --- CALCOLO METRICHE (Tutte sulla mappa 1024x2048) ---
             
-            # MSP
-            anomaly_result_MSP = 1.0 - torch.max(full_probs, dim=1)[0].squeeze().cpu().numpy()
+            # MSP: 1 - max probability
+            # Se la rete è sicura (es. 0.9), score è 0.1. Se incerta (0.2), score è 0.8.
+            anomaly_result_MSP = 1.0 - torch.max(full_probs_upsampled, dim=1)[0].squeeze().cpu().numpy()
+            
             # MaxLogit
-            anomaly_result_MaxLogit = - torch.max(full_logits, dim=1)[0].squeeze().cpu().numpy()
+            # FIX: Usiamo la versione upsamplata.
+            # Poiché non abbiamo logit puri (-inf, +inf), usiamo -max(prob).
+            # Sarà molto correlato a MSP, ma evita il crash.
+            anomaly_result_MaxLogit = - torch.max(full_probs_upsampled, dim=1)[0].squeeze().cpu().numpy()
+            
             # MaxEntropy
-            anomaly_result_MaxEntropy = - torch.sum(full_probs * torch.log(full_probs + 1e-10), dim=1).squeeze().cpu().numpy()
+            anomaly_result_MaxEntropy = - torch.sum(full_probs_upsampled * torch.log(full_probs_upsampled + 1e-10), dim=1).squeeze().cpu().numpy()
+            
             # RbA
             mask_probs_all = m_logits.sigmoid()
-            class_probs_all = c_logits.softmax(dim=-1) # keeping the null class!
-            rba_left = score_rba(mask_probs_all[0], class_probs_all[0], mask_th=0.0, class_th=0.0)   # [1024, 1024]
-            rba_right = score_rba(mask_probs_all[1], class_probs_all[1], mask_th=0.0, class_th=0.0)  # [1024, 1024]
+            class_probs_all = c_logits.softmax(dim=-1) 
+            rba_left = score_rba(mask_probs_all[0], class_probs_all[0])
+            rba_right = score_rba(mask_probs_all[1], class_probs_all[1])
             full_rba = torch.cat([rba_left.unsqueeze(0).unsqueeze(0), 
                                   rba_right.unsqueeze(0).unsqueeze(0)], dim=-1)
             full_rba = F.interpolate(full_rba, size=(1024, 2048), mode="bilinear", align_corners=False)
