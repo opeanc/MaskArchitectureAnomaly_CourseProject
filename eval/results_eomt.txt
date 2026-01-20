@@ -59,3 +59,237 @@
 		MaxLogit => 			AUPRC score:83.36146225185513   FPR@TPR95:10.59277360827649 // RoadAnomaly
 		MaxEntropy => 			AUPRC score:76.91760333364968   FPR@TPR95:10.00071075173405 // RoadAnomaly
 		RbA => 			AUPRC score:61.63867768266565   FPR@TPR95:11.707225362942582 // RoadAnomaly
+
+
+
+==== Outlier Exposure, boost on MSP (unknown epoch, just a guess) ====
+		MSP =>             AUPRC score:60.967221862033526   FPR@TPR95:46.557112408590626 // RoadAnomaly21
+		MaxLogit =>             AUPRC score:63.39985864372698   FPR@TPR95:31.23122993387184 // RoadAnomaly21
+		MaxEntropy =>             AUPRC score:62.34647553547346   FPR@TPR95:44.310668045512855 // RoadAnomaly21
+		RbA =>             AUPRC score:73.85807120397988   FPR@TPR95:17.635945164108417 // RoadAnomaly21
+
+		MSP =>             AUPRC score:58.819930791672434   FPR@TPR95:0.8686223901647626 // RoadObsticle21
+		MaxLogit =>             AUPRC score:58.64201890657947   FPR@TPR95:0.871774072891642 // RoadObsticle21
+		MaxEntropy =>             AUPRC score:59.19446657012325   FPR@TPR95:0.8671567800691102 // RoadObsticle21
+		RbA =>             AUPRC score:84.37538052014635   FPR@TPR95:0.8700248631023396 // RoadObsticle21
+
+		MSP =>             AUPRC score:56.205514925702104   FPR@TPR95:15.855114289554221 // fs_static
+		MaxLogit =>             AUPRC score:53.12035257922055   FPR@TPR95:16.679626496134276 // fs_static
+		MaxEntropy =>             AUPRC score:56.78900464132256   FPR@TPR95:15.43819116015749 // fs_static
+		RbA =>             AUPRC score:62.080858524934015   FPR@TPR95:15.41087464729293 // fs_static
+
+		MSP =>             AUPRC score:57.22183919748189   FPR@TPR95:21.963878126432835 // RoadAnomaly
+		MaxLogit =>             AUPRC score:57.168130103037655   FPR@TPR95:22.26861747244324 // RoadAnomaly
+		MaxEntropy =>             AUPRC score:56.03960227396465   FPR@TPR95:21.947629720334348 // RoadAnomaly
+		RbA =>             AUPRC score:57.517088607760535   FPR@TPR95:20.894266850732944 // RoadAnomaly
+
+==== Outlier Exposure, boost on MSP, 1 epoch training ====
+		MSP =>             AUPRC score:70.22421963768024   FPR@TPR95:18.03181316585511 // RoadAnomaly21
+		MaxLogit =>             AUPRC score:71.15300177642216   FPR@TPR95:17.87813647034683 // RoadAnomaly21
+		MaxEntropy =>             AUPRC score:69.32019503954452   FPR@TPR95:17.796517490324817 // RoadAnomaly21
+		RbA =>             AUPRC score:73.43083271506946   FPR@TPR95:17.759856473234432 // RoadAnomaly21
+
+		MSP =>             AUPRC score:77.87487547263913   FPR@TPR95:1.0773253809323706 // RoadObsticle21
+		MaxLogit =>             AUPRC score:85.60713535361089   FPR@TPR95:1.074127456982075 // RoadObsticle21
+		MaxEntropy =>             AUPRC score:59.05170125917284   FPR@TPR95:1.0730153186202211 // RoadObsticle21
+		RbA =>             AUPRC score:84.60590120330784   FPR@TPR95:1.065810124997122 // RoadObsticle21
+
+		MSP =>             AUPRC score:20.513883618036573   FPR@TPR95:9.456853178292162 // FS_LostFound_full
+		MaxLogit =>             AUPRC score:22.84018909576837   FPR@TPR95:9.31511995845124 // FS_LostFound_full
+		MaxEntropy =>             AUPRC score:15.821457392850421   FPR@TPR95:9.27121301365076 // FS_LostFound_full
+		RbA =>             AUPRC score:17.25814469852497   FPR@TPR95:8.87803075807105 // FS_LostFound_full
+
+		MSP =>             AUPRC score:71.14469149025932   FPR@TPR95:7.97158573622105 // fs_static
+		MaxLogit =>             AUPRC score:76.93282955677687   FPR@TPR95:7.763849228442092 // fs_static
+		MaxEntropy =>             AUPRC score:58.24354105541728   FPR@TPR95:7.547488062590527 // fs_static
+		RbA =>             AUPRC score:71.8827263912651   FPR@TPR95:6.539699036083621 // fs_static
+
+		MSP =>             AUPRC score:70.12564057372519   FPR@TPR95:16.32242230604447 // RoadAnomaly
+		MaxLogit =>             AUPRC score:72.70873989242277   FPR@TPR95:16.132404453018005 // RoadAnomaly
+		MaxEntropy =>             AUPRC score:63.876896707860396   FPR@TPR95:15.752391679543512 // RoadAnomaly
+		RbA =>             AUPRC score:65.16487709942447   FPR@TPR95:15.768072540722356 // RoadAnomaly
+
+
+==== Outlier Exposure, boost on MSP, 2 epoch training ====
+		MSP =>             AUPRC score:69.81724541428451   FPR@TPR95:14.29662995827645 // RoadAnomaly21
+		MaxLogit =>             AUPRC score:68.58389752781162   FPR@TPR95:14.17097692045326 // RoadAnomaly21
+		MaxEntropy =>             AUPRC score:69.50548738009242   FPR@TPR95:14.134409203883541 // RoadAnomaly21
+		RbA =>             AUPRC score:73.36861691530669   FPR@TPR95:13.956538140032098 // RoadAnomaly21
+
+		MSP =>             AUPRC score:83.96224605993335   FPR@TPR95:1.015807240536095 // RoadObsticle21
+		MaxLogit =>             AUPRC score:87.64330208961242   FPR@TPR95:1.0149400629125538 // RoadObsticle21
+		MaxEntropy =>             AUPRC score:70.69079307795239   FPR@TPR95:1.0110689439561573 // RoadObsticle21
+		RbA =>             AUPRC score:87.39079323927191   FPR@TPR95:1.0363343476852533 // RoadObsticle21
+
+		MSP =>             AUPRC score:21.11515614838338   FPR@TPR95:11.113732579789259 // FS_LostFound_full
+		MaxLogit =>             AUPRC score:22.836809733240436   FPR@TPR95:10.910672174807864 // FS_LostFound_full
+		MaxEntropy =>             AUPRC score:18.11569557389828   FPR@TPR95:10.758772697889432 // FS_LostFound_full
+		RbA =>             AUPRC score:14.675631075493941   FPR@TPR95:10.47671518331614 // FS_LostFound_full
+
+		MSP =>             AUPRC score:68.82035313113121   FPR@TPR95:13.23560563366531 // fs_static
+		MaxLogit =>             AUPRC score:73.40999010736344   FPR@TPR95:12.97971573528792 // fs_static
+		MaxEntropy =>             AUPRC score:58.84055018967413   FPR@TPR95:12.968404486514032 // fs_static
+		RbA =>             AUPRC score:73.4064740829472   FPR@TPR95:12.155906786678884 // fs_static
+
+		MSP =>             AUPRC score:69.53910949343768   FPR@TPR95:23.439905142733704 // RoadAnomaly
+		MaxLogit =>             AUPRC score:68.8209900892092   FPR@TPR95:23.087820532771534 // RoadAnomaly
+		MaxEntropy =>             AUPRC score:64.873440857468   FPR@TPR95:22.819346746370357 // RoadAnomaly
+		RbA =>             AUPRC score:64.67191625666369   FPR@TPR95:22.82458019146287 // RoadAnomaly
+
+==== Outlier Exposure, boost on MSP, 3 epoch training ====
+		MSP =>             AUPRC score:71.12561268333505   FPR@TPR95:15.046451230554824 // RoadAnomaly21
+		MaxLogit =>             AUPRC score:71.81198967048338   FPR@TPR95:14.67284793361842 // RoadAnomaly21
+		MaxEntropy =>             AUPRC score:69.95361229804236   FPR@TPR95:15.068985866316108 // RoadAnomaly21
+		RbA =>             AUPRC score:74.53961181228352   FPR@TPR95:14.377304272167901 // RoadAnomaly21
+
+		MSP =>             AUPRC score:71.62286050975852   FPR@TPR95:1.0833010415707844 // RoadObsticle21
+		MaxLogit =>             AUPRC score:83.66498540647436   FPR@TPR95:1.0831830505090532 // RoadObsticle21
+		MaxEntropy =>             AUPRC score:52.00685933037483   FPR@TPR95:1.0970583527738562 // RoadObsticle21
+		RbA =>             AUPRC score:81.99871723212271   FPR@TPR95:1.0889961391110317 // RoadObsticle21
+
+		MSP =>             AUPRC score:19.96301757289422   FPR@TPR95:7.74771212871415 // FS_LostFound_full
+		MaxLogit =>             AUPRC score:23.121301551218778   FPR@TPR95:7.553364248559431 // FS_LostFound_full
+		MaxEntropy =>             AUPRC score:15.395431581076751   FPR@TPR95:7.297547475447843 // FS_LostFound_full
+		RbA =>             AUPRC score:15.463624947469313   FPR@TPR95:6.83223788742805 // FS_LostFound_full
+
+		MSP =>             AUPRC score:75.30654875356879   FPR@TPR95:6.747749157581113 // fs_static
+		MaxLogit =>             AUPRC score:79.5494730471032   FPR@TPR95:6.4509007620336165 // fs_static
+		MaxEntropy =>             AUPRC score:60.60852686315105   FPR@TPR95:5.973152862126598 // fs_static
+		RbA =>             AUPRC score:70.99071771888632   FPR@TPR95:5.125062916048003 // fs_static
+
+		MSP =>             AUPRC score:69.2844308283428   FPR@TPR95:18.522140880078645 // RoadAnomaly
+		MaxLogit =>             AUPRC score:72.36798757028815   FPR@TPR95:17.93366828971229 // RoadAnomaly
+		MaxEntropy =>             AUPRC score:64.41291744473726   FPR@TPR95:17.895178691642613 // RoadAnomaly
+		RbA =>             AUPRC score:63.739209576878984   FPR@TPR95:17.80045190232775 // RoadAnomaly
+
+==== Outlier Exposure, boost on MSP, 4 epoch training ====
+		MSP =>             AUPRC score:74.46704510136664   FPR@TPR95:14.940711603520295 // RoadAnomaly21
+		MaxLogit =>             AUPRC score:75.41865021042776   FPR@TPR95:14.760398451342763 // RoadAnomaly21
+		MaxEntropy =>             AUPRC score:72.86596897857672   FPR@TPR95:15.176187203734026 // RoadAnomaly21
+		RbA =>             AUPRC score:76.9517148679461   FPR@TPR95:14.53293295593941 // RoadAnomaly21
+
+		MSP =>             AUPRC score:79.88677843466404   FPR@TPR95:0.9483952061094412 // RoadObsticle21
+		MaxLogit =>             AUPRC score:87.74808985443798   FPR@TPR95:0.9478623698966996 // RoadObsticle21
+		MaxEntropy =>             AUPRC score:60.029279457729565   FPR@TPR95:0.9500140935844728 // RoadObsticle21
+		RbA =>             AUPRC score:86.7210737714173   FPR@TPR95:0.9528618495326627 // RoadObsticle21
+
+		MSP =>             AUPRC score:19.5720451368513   FPR@TPR95:8.204820882491068 // FS_LostFound_full
+		MaxLogit =>             AUPRC score:20.811091750288664   FPR@TPR95:8.033209764693387 // FS_LostFound_full
+		MaxEntropy =>             AUPRC score:15.978955943085364   FPR@TPR95:8.075854615987982 // FS_LostFound_full
+		RbA =>             AUPRC score:15.560544070959775   FPR@TPR95:7.300669020452108 // FS_LostFound_full
+
+		MSP =>             AUPRC score:75.2345301771418   FPR@TPR95:8.271333690072693 // fs_static
+		MaxLogit =>             AUPRC score:79.13570234563907   FPR@TPR95:7.97103046882493 // fs_static
+		MaxEntropy =>             AUPRC score:61.37474168531506   FPR@TPR95:7.709085625036533 // fs_static
+		RbA =>             AUPRC score:74.68731800585694   FPR@TPR95:6.683378585599038 // fs_static
+
+		MSP =>             AUPRC score:72.10323124993194   FPR@TPR95:15.720775760059505 // RoadAnomaly
+		MaxLogit =>             AUPRC score:75.19110563293552   FPR@TPR95:15.578952923573253 // RoadAnomaly
+		MaxEntropy =>             AUPRC score:67.60332088914592   FPR@TPR95:15.47969548439223 // RoadAnomaly
+		RbA =>             AUPRC score:66.75842514164798   FPR@TPR95:15.222491768381483 // RoadAnomaly
+
+==== Outlier Exposure, boost on RbA (new), 1 epoch training ====
+		MSP =>             AUPRC score:71.20565281600429   FPR@TPR95:19.06134163605877 // RoadAnomaly21
+		MaxLogit =>             AUPRC score:71.76294106953279   FPR@TPR95:18.892424586842182 // RoadAnomaly21
+		MaxEntropy =>             AUPRC score:70.16339446156226   FPR@TPR95:19.069900911335793 // RoadAnomaly21
+		RbA =>             AUPRC score:74.71861746329391   FPR@TPR95:18.76051627783667 // RoadAnomaly21
+
+		MSP =>             AUPRC score:75.77200780026232   FPR@TPR95:1.673019860955963 // RoadObsticle21
+		MaxLogit =>             AUPRC score:83.01194651997486   FPR@TPR95:1.6754036590536177 // RoadObsticle21
+		MaxEntropy =>             AUPRC score:59.96151263075335   FPR@TPR95:1.672717737672948 // RoadObsticle21
+		RbA =>             AUPRC score:84.09653975852653   FPR@TPR95:1.7072551477613902 // RoadObsticle21
+
+		MSP =>             AUPRC score:18.73825907215501   FPR@TPR95:8.348990240583285 // FS_LostFound_full
+		MaxLogit =>             AUPRC score:19.025143278661286   FPR@TPR95:8.270771210574681 // FS_LostFound_full
+		MaxEntropy =>             AUPRC score:15.125300357954657   FPR@TPR95:8.060938943588962 // FS_LostFound_full
+		RbA =>             AUPRC score:16.961501906006035   FPR@TPR95:7.405652558808544 // FS_LostFound_full
+
+		MSP =>             AUPRC score:74.96697475612712   FPR@TPR95:8.141558674317018 // fs_static
+		MaxLogit =>             AUPRC score:79.45694010251678   FPR@TPR95:7.766883692290115 // fs_static
+		MaxEntropy =>             AUPRC score:61.80822076002323   FPR@TPR95:7.3073120659469275 // fs_static
+		RbA =>             AUPRC score:77.96184644035652   FPR@TPR95:6.40979381620867 // fs_static
+
+		MSP =>             AUPRC score:71.06302548447289   FPR@TPR95:15.96586845326779 // RoadAnomaly
+		MaxLogit =>             AUPRC score:72.09893756689377   FPR@TPR95:15.677395096498023 // RoadAnomaly
+		MaxEntropy =>             AUPRC score:63.814460064825404   FPR@TPR95:15.459775838278789 // RoadAnomaly
+		RbA =>             AUPRC score:67.22070459511048   FPR@TPR95:15.471294986211898 // RoadAnomaly
+
+==== Outlier Exposure, boost on RbA (new), 2 epoch training ====
+		MSP =>             AUPRC score:71.12112741790432   FPR@TPR95:18.615125832422244 // RoadAnomaly21
+		MaxLogit =>             AUPRC score:70.59241403597379   FPR@TPR95:18.485386717913734 // RoadAnomaly21
+		MaxEntropy =>             AUPRC score:69.87696132240461   FPR@TPR95:19.263614157563673 // RoadAnomaly21
+		RbA =>             AUPRC score:74.45075270549184   FPR@TPR95:18.37519004418978 // RoadAnomaly21
+
+		MSP =>             AUPRC score:78.26122892048346   FPR@TPR95:0.9302624989449105 // RoadObsticle21
+		MaxLogit =>             AUPRC score:87.70175292664867   FPR@TPR95:0.9367947365966927 // RoadObsticle21
+		MaxEntropy =>             AUPRC score:62.05232263110335   FPR@TPR95:0.9399068651491668 // RoadObsticle21
+		RbA =>             AUPRC score:88.04392804264194   FPR@TPR95:0.9199060643292081 // RoadObsticle21
+
+		MSP =>             AUPRC score:18.958800274280836   FPR@TPR95:7.887484556246946 // FS_LostFound_full
+		MaxLogit =>             AUPRC score:21.493265487875707   FPR@TPR95:7.748741949545821 // FS_LostFound_full
+		MaxEntropy =>             AUPRC score:15.613942823068038   FPR@TPR95:7.684177404241786 // FS_LostFound_full
+		RbA =>             AUPRC score:16.853144179815732   FPR@TPR95:7.182284907758764 // FS_LostFound_full
+
+		MSP =>             AUPRC score:72.87015193608508   FPR@TPR95:8.960880302986832 // fs_static
+		MaxLogit =>             AUPRC score:78.95388190532043   FPR@TPR95:8.707788180544975 // fs_static
+		MaxEntropy =>             AUPRC score:59.48432573563982   FPR@TPR95:8.472367942412975 // fs_static
+		RbA =>             AUPRC score:75.49881525671204   FPR@TPR95:7.494960954039602 // fs_static
+
+		MSP =>             AUPRC score:71.51036556147459   FPR@TPR95:12.466388166250926 // RoadAnomaly
+		MaxLogit =>             AUPRC score:72.06232772596537   FPR@TPR95:12.345527056568093 // RoadAnomaly
+		MaxEntropy =>             AUPRC score:64.90363536271151   FPR@TPR95:12.262577441048544 // RoadAnomaly
+		RbA =>             AUPRC score:68.1088293783239   FPR@TPR95:12.180966857077074 // RoadAnomaly
+
+
+==== Outlier Exposure, boost on RbA (new), 3 epoch training ====
+		MSP =>             AUPRC score:69.52455853364874   FPR@TPR95:18.46010647026752 // RoadAnomaly21
+		MaxLogit =>             AUPRC score:69.32370061181541   FPR@TPR95:18.182959431866376 // RoadAnomaly21
+		MaxEntropy =>             AUPRC score:67.92070815396778   FPR@TPR95:18.5552084136174 // RoadAnomaly21
+		RbA =>             AUPRC score:72.76420281952971   FPR@TPR95:18.010114269682152 // RoadAnomaly21
+
+		MSP =>             AUPRC score:71.4384762415212   FPR@TPR95:1.392813335354412 // RoadObsticle21
+		MaxLogit =>             AUPRC score:82.88718372582952   FPR@TPR95:1.3909909796149245 // RoadObsticle21
+		MaxEntropy =>             AUPRC score:53.5655801864755   FPR@TPR95:1.368653637360618 // RoadObsticle21
+		RbA =>             AUPRC score:84.33449764280569   FPR@TPR95:1.2907413860086276 // RoadObsticle21
+
+		MSP =>             AUPRC score:19.432508732273412   FPR@TPR95:7.081038717408614 // FS_LostFound_full
+		MaxLogit =>             AUPRC score:20.120454283843443   FPR@TPR95:6.921620566597661 // FS_LostFound_full
+		MaxEntropy =>             AUPRC score:15.412827955781328   FPR@TPR95:6.723737636101984 // FS_LostFound_full
+		RbA =>             AUPRC score:17.370431270313517   FPR@TPR95:6.179006901417558 // FS_LostFound_full
+
+		MSP =>             AUPRC score:77.00964937892023   FPR@TPR95:6.216765780014311 // fs_static
+		MaxLogit =>             AUPRC score:82.2176320470576   FPR@TPR95:5.947892301919178 // fs_static
+		MaxEntropy =>             AUPRC score:62.598342750980976   FPR@TPR95:5.436191899978812 // fs_static
+		RbA =>             AUPRC score:77.7581527940882   FPR@TPR95:4.685291734357029 // fs_static
+
+		MSP =>             AUPRC score:70.9488532261162   FPR@TPR95:14.075839155092826 // RoadAnomaly
+		MaxLogit =>             AUPRC score:72.13168116517998   FPR@TPR95:13.871716382573346 // RoadAnomaly
+		MaxEntropy =>             AUPRC score:63.954581291794895   FPR@TPR95:14.078702555473935 // RoadAnomaly
+		RbA =>             AUPRC score:68.33291624640545   FPR@TPR95:13.376968483272538 // RoadAnomaly
+
+
+==== Outlier Exposure, boost on RbA (new), 4 epoch training ====
+		MSP =>             AUPRC score:72.50553266873794   FPR@TPR95:19.853905182222768 // RoadAnomaly21
+		MaxLogit =>             AUPRC score:71.88091561119903   FPR@TPR95:20.029553842907532 // RoadAnomaly21
+		MaxEntropy =>             AUPRC score:71.19332981538784   FPR@TPR95:19.602152174883255 // RoadAnomaly21
+		RbA =>             AUPRC score:75.23665249721255   FPR@TPR95:19.887636639395772 // RoadAnomaly21
+
+		MSP =>             AUPRC score:81.89989490370559   FPR@TPR95:0.8153122452743492 // RoadObsticle21
+		MaxLogit =>             AUPRC score:90.22571652063154   FPR@TPR95:0.8109432323978896 // RoadObsticle21
+		MaxEntropy =>             AUPRC score:65.21924319471368   FPR@TPR95:0.801824578325749 // RoadObsticle21
+		RbA =>             AUPRC score:89.97475624087687   FPR@TPR95:0.8121399920540326 // RoadObsticle21
+
+		MSP =>             AUPRC score:20.233413949402372   FPR@TPR95:9.493442879889042 // FS_LostFound_full
+		MaxLogit =>             AUPRC score:20.71912743381837   FPR@TPR95:9.373135448033509 // FS_LostFound_full
+		MaxEntropy =>             AUPRC score:15.93953497252837   FPR@TPR95:9.286686606793594 // FS_LostFound_full
+		RbA =>             AUPRC score:13.025466477496758   FPR@TPR95:8.501093489207785 // FS_LostFound_full
+
+		MSP =>             AUPRC score:75.20182667573411   FPR@TPR95:7.126454789246495 // fs_static
+		MaxLogit =>             AUPRC score:80.72253089602981   FPR@TPR95:6.854253537105615 // fs_static
+		MaxEntropy =>             AUPRC score:61.520727449068794   FPR@TPR95:6.445068063533347 // fs_static
+		RbA =>             AUPRC score:75.80436924035962   FPR@TPR95:5.540554953597394 // fs_static
+
+		MSP =>             AUPRC score:71.19335930880158   FPR@TPR95:13.706007602695653 // RoadAnomaly
+		MaxLogit =>             AUPRC score:71.61499583175032   FPR@TPR95:13.49856013569481 // RoadAnomaly
+		MaxEntropy =>             AUPRC score:65.41437343701803   FPR@TPR95:13.600581489994482 // RoadAnomaly
+		RbA =>             AUPRC score:67.17619259619354   FPR@TPR95:13.26256470581328 // RoadAnomaly

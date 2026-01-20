@@ -278,11 +278,11 @@ def main():
         if 1 not in np.unique(ood_gts):
             continue              
         else:
-            ood_gts_list.append(ood_gts.flatten())
-            anomaly_score_list["MSP"].append(anomaly_result_MSP.flatten())
-            anomaly_score_list["MaxLogit"].append(anomaly_result_MaxLogit.flatten())
-            anomaly_score_list["MaxEntropy"].append(anomaly_result_MaxEntropy.flatten())
-            anomaly_score_list["RbA"].append(anomaly_result_RbA.flatten())
+            ood_gts_list.append(ood_gts.flatten().astype(np.uint8))
+            anomaly_score_list["MSP"].append(anomaly_result_MSP.flatten().astype(np.float16))
+            anomaly_score_list["MaxLogit"].append(anomaly_result_MaxLogit.flatten().astype(np.float16))
+            anomaly_score_list["MaxEntropy"].append(anomaly_result_MaxEntropy.flatten().astype(np.float16))
+            anomaly_score_list["RbA"].append(anomaly_result_RbA.flatten().astype(np.float16))
         del anomaly_result_MSP, anomaly_result_MaxLogit, anomaly_result_MaxEntropy, ood_gts, mask
         torch.cuda.empty_cache()
 
