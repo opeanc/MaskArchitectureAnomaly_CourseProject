@@ -40,12 +40,14 @@ NUM_CLASSES = 20
 torch.backends.cudnn.deterministic = True
 torch.backends.cudnn.benchmark = True
 
+# --- CONFIGURAZIONE ODIN ---
+ODIN_TEMP = 1000.0  # Temperatura alta
+ODIN_EPS = 0.0014   # Magnitudo perturbazione (ImageNet value)
+
 input_transform = Compose(
     [
         Resize((1024, 2048), Image.BILINEAR),
         ToTensor(),
-        Normalize(mean=[123.675/255, 116.280/255, 103.530/255], 
-                  std=[58.395/255, 57.120/255, 57.375/255])
     ]
 )
 
@@ -80,6 +82,85 @@ def window_inference(model, img, img_size=(640, 640)):
     return mask_logits, class_logits
 
 
+def window_inference_odin_query_level(model, img):
+    """
+    Nuovo approccio: Query-Level ODIN.
+    Ottimizza la confidenza delle Object Queries invece che la mappa pixel-wise.
+    """
+    # Preparazione Input
+    x = img.float() / 255.0 if img.max() > 1.0 else img.float()
+    crops = torch.cat([x[:, :, :, 0:1024], x[:, :, :, 1024:2048]], dim=0)
+    
+    # 1. SETUP PERTURBAZIONE
+    crops_input = crops.clone().detach()
+    crops_input.requires_grad = True
+    
+    # 2. PRIMA PASSATA (Clean)
+    mask_logits_list, class_logits_list = model(crops_input)
+    # class_logits: [B, Q, K+1] (dove K+1 è 19 classi + 1 void/no-object)
+    class_logits = class_logits_list[-1] 
+    
+    # Applica Temperature Scaling SUBITO sui logit grezzi
+    class_logits_scaled = class_logits / ODIN_TEMP # [B, Q, 20]
+
+    # --- CUORE DELLA NUOVA IMPLEMENTAZIONE ---
+    # Vogliamo massimizzare la confidenza delle query che predicono oggetti "In-Distribution" (ID).
+    # Non ci interessa il pixel, ci interessa che la Query sia sicura.
+    
+    with torch.enable_grad(): # Assicuriamoci che il gradiente scorra
+        # a. Identifica la classe predetta per ogni query (senza perturbazione)
+        #    Usiamo Softmax per trovare la classe dominante
+        probs = F.softmax(class_logits_scaled, dim=-1) # [B, Q, 20]
+        max_vals, max_indices = torch.max(probs, dim=-1) # max_vals: confidenza, max_indices: classe ID
+        
+        # b. Filtro: Consideriamo solo le query che NON sono 'Void/No-Object' (ultima classe, indice 19)
+        #    E che hanno una confidenza minima (es. > 0.1) per evitare di ottimizzare il rumore.
+        #    Assumiamo che l'indice 19 sia Void (controlla il tuo config, ma di solito è l'ultimo).
+        VOID_IDX = 19 
+        valid_queries_mask = (max_indices != VOID_IDX) & (max_vals > 0.1)
+        
+        # Se nessuna query è valida (immagine vuota o solo background), la loss è 0
+        if valid_queries_mask.sum() > 0:
+            # c. Calcolo Loss ODIN sulle query valide
+            #    Loss = - sum( log( prob_della_classe_predetta ) )
+            #    Vogliamo minimizzare questa loss -> cioè massimizzare la probabilità.
+            
+            # Estraiamo le probabilità delle classi vincenti solo per le query valide
+            # Gather targets the max_indices
+            selected_probs = max_vals[valid_queries_mask]
+            
+            # Loss: vogliamo massimizzare queste probabilità. 
+            # In pytorch facciamo gradient ascent sulla loss, o descent su -loss.
+            # ODIN usa perturbazione = sign(-grad_loss). 
+            # Qui definiamo loss = sum(log(probs)). Vogliamo AUMENTARLA.
+            # Quindi perturbazione = sign(grad_loss).
+            loss = torch.log(selected_probs + 1e-10).sum()
+            
+            # d. Backward
+            model.zero_grad()
+            loss.backward()
+            
+            # e. Calcolo Perturbazione
+            # Se la loss era log(p), il gradiente punta verso l'aumento di p.
+            perturbation = ODIN_EPS * crops_input.grad.sign()
+            
+            # Applica perturbazione
+            crops_perturbed = (crops_input + perturbation).detach()
+        else:
+            # Nessuna query attiva da ottimizzare, usiamo l'immagine originale
+            crops_perturbed = crops_input.detach()
+
+    # 3. SECONDA PASSATA (Perturbed)
+    #    Ora facciamo inferenza normale sull'immagine perturbata
+    with torch.no_grad():
+        m_logits_p_list, c_logits_p_list = model(crops_perturbed)
+        m_logits_p = m_logits_p_list[-1]
+        c_logits_p = c_logits_p_list[-1]
+
+    # Ritorniamo i risultati.
+    # NOTA: Dividiamo per ODIN_TEMP qui, così il resto della pipeline usa i logit scalati.
+    return m_logits_p, c_logits_p / ODIN_TEMP
+
 
 def main():
     parser = ArgumentParser()
@@ -98,14 +179,10 @@ def main():
     parser.add_argument('--num-workers', type=int, default=4)
     parser.add_argument('--batch-size', type=int, default=1)
     parser.add_argument('--cpu', action='store_true')
-    parser.add_argument('--temperature', type=float, default=1000.0, help='temperature scaling')
-    parser.add_argument('--epsilon', type=float, default=0.0014, help='ODIN perturbation magnitude')
     args = parser.parse_args()
     anomaly_score_list = {
         "MSP": list(),
-        "MaxLogit": list(),
-        "MaxEntropy": list(),
-        "RbA": list()
+        "ODIN": list()
     }
     ood_gts_list = []
 
@@ -170,124 +247,58 @@ def main():
     print ("Model and weights LOADED successfully")
     model.eval()
 
-    def score_rba(mask_probs, class_probs, mask_th=0.5, class_th=0.5, reduce="max"):
-        """
-        mask_probs:  [Q, H, W]          (sigmoid)
-        class_probs: [Q, C+1]           (softmax, last = no-object)
-
-        Returns:
-            anomaly_map: [H, W] (float, higher = more anomalous)
-        """
-
-        # 1. splits ID vs no-object
-        id_probs, _ = class_probs[:, :-1].max(dim=1)  # [Q]
-        noobj_probs = class_probs[:, -1]               # [Q]
-
-        # 2. filters useless queries (fondamental)
-        keep = (noobj_probs < 0.5) & (id_probs > class_th)
-        if keep.sum() == 0:
-            # tutte le query rifiutano → tutto OOD
-            return torch.ones(mask_probs.shape[1:], device=mask_probs.device)
-
-        mask_probs = mask_probs[keep]
-        id_probs = id_probs[keep]
-
-        # 3. spatal gating
-        valid = mask_probs > mask_th
-        pixel_acceptance = torch.where(
-            valid,
-            id_probs[:, None, None] * mask_probs,
-            torch.zeros_like(mask_probs),
-        )
-
-        # 4. RbA aggregation
-        if reduce == "max":
-            acceptance = pixel_acceptance.max(dim=0)[0]
-        elif reduce == "mean":
-            acceptance = pixel_acceptance.mean(dim=0)
-        else:
-            raise ValueError("reduce must be 'max' or 'mean'")
-
-        # 5. rejection score
-        anomaly_map = 1.0 - acceptance
-        return anomaly_map
 
     
     for path in glob.glob(os.path.expanduser(str(args.input[0]))):
         print(path)
-
         images = input_transform((Image.open(path).convert('RGB'))).unsqueeze(0).float().cuda()
-        images.requires_grad = True 
-
-        # ODIN forward pass
-        net = model.module if hasattr(model, 'module') else model
-        
-        # inference
-        m_logits, c_logits = window_inference(net, images)
-        pixel_logits_crops = to_per_pixel_logits_semantic(m_logits, c_logits)
-        full_logits = torch.cat([pixel_logits_crops[0:1], pixel_logits_crops[1:2]], dim=-1)
-        full_logits = F.interpolate(full_logits, size=(1024, 2048), mode="bilinear", align_corners=False)
-        
-        # ODIN loss
-        pred_labels = full_logits.argmax(dim=1)
-        pred_scores = full_logits.gather(1, pred_labels.unsqueeze(1)).squeeze(1)
-        loss = -torch.log(pred_scores + 1e-10).mean()
-        loss.backward()
-
-        gradient_sign = images.grad.data.sign()
-        
-        # adding noise
-        images_perturbed = images - (args.epsilon * gradient_sign)
-        images_perturbed = images_perturbed.detach()
-        
-        model.zero_grad()
-        if images.grad is not None:
-            images.grad.zero_()
-        del full_logits, m_logits, c_logits, pixel_logits_crops, loss
-        
+        #images = images.permute(0,3,1,2)
         with torch.no_grad():
-            m_logits, c_logits = window_inference(net, images_perturbed)
+            net = model.module if hasattr(model, 'module') else model
+            m_logits, c_logits = window_inference(net, images)
 
-            # 1. Semantic fusion
-            pixel_probs_crops = to_per_pixel_logits_semantic(m_logits, c_logits)
+            # semantic fusion (Sigmoid * Softmax)
+            pixel_logits_crops = to_per_pixel_logits_semantic(m_logits, c_logits)
 
-            # 2. Stitching
-            # Nota: pixel_probs_crops sono già "quasi" probabilità (sigmoid * softmax)
-            full_probs_small = torch.cat([pixel_probs_crops[0:1], pixel_probs_crops[1:2]], dim=-1)
+            # stitching
+            # 1024x1024 | 1024x1024 -> 1024x2048
+            full_logits = torch.cat([pixel_logits_crops[0:1], pixel_logits_crops[1:2]], dim=-1)
 
-            # 3. Upsample UNICO per tutto
-            # Usiamo full_probs_upsampled per TUTTE le metriche
-            full_probs_upsampled = F.interpolate(
-                full_probs_small, 
+            # upsample
+            full_logits = F.interpolate(
+                full_logits, 
                 size=(1024, 2048),
                 mode="bilinear", 
                 align_corners=False
             )
+
+            full_probs = F.softmax(full_logits, dim=1)
             
-            # --- CALCOLO METRICHE (Tutte sulla mappa 1024x2048) ---
             
-            # MSP: 1 - max probability
-            # Se la rete è sicura (es. 0.9), score è 0.1. Se incerta (0.2), score è 0.8.
-            anomaly_result_MSP = 1.0 - torch.max(full_probs_upsampled, dim=1)[0].squeeze().cpu().numpy()
+            # MSP
+            anomaly_result_MSP = 1.0 - torch.max(full_probs, dim=1)[0].squeeze().cpu().numpy()
             
-            # MaxLogit
-            # FIX: Usiamo la versione upsamplata.
-            # Poiché non abbiamo logit puri (-inf, +inf), usiamo -max(prob).
-            # Sarà molto correlato a MSP, ma evita il crash.
-            anomaly_result_MaxLogit = - torch.max(full_probs_upsampled, dim=1)[0].squeeze().cpu().numpy()
+
+        # --- ODIN INFERENCE (Perturbed Input) ---
+        # Richiede gradiente -> No torch.no_grad() globale, ma gestito in window_inference_odin
+        net = model.module if hasattr(model, 'module') else model
+        m_logits_odin, c_logits_odin = window_inference_odin_query_level(net, images)
+
+        with torch.no_grad(): # Post-processing ODIN non richiede gradiente
+            # c_logits_odin è già diviso per T. La funzione sotto fa softmax.
+            pixel_logits_crops_odin = to_per_pixel_logits_semantic(m_logits_odin, c_logits_odin)
             
-            # MaxEntropy
-            anomaly_result_MaxEntropy = - torch.sum(full_probs_upsampled * torch.log(full_probs_upsampled + 1e-10), dim=1).squeeze().cpu().numpy()
+            # stitching ODIN
+            full_logits_odin = torch.cat([pixel_logits_crops_odin[0:1], pixel_logits_crops_odin[1:2]], dim=-1)
+            full_logits_odin = F.interpolate(full_logits_odin, size=(1024, 2048), mode="bilinear", align_corners=False)
             
-            # RbA
-            mask_probs_all = m_logits.sigmoid()
-            class_probs_all = c_logits.softmax(dim=-1) 
-            rba_left = score_rba(mask_probs_all[0], class_probs_all[0])
-            rba_right = score_rba(mask_probs_all[1], class_probs_all[1])
-            full_rba = torch.cat([rba_left.unsqueeze(0).unsqueeze(0), 
-                                  rba_right.unsqueeze(0).unsqueeze(0)], dim=-1)
-            full_rba = F.interpolate(full_rba, size=(1024, 2048), mode="bilinear", align_corners=False)
-            anomaly_result_RbA = full_rba.squeeze().cpu().numpy()
+            # ODIN Score = MSP su output perturbato e scalato
+            # full_logits_odin sono già probabilità pesate (sigm * softmax).
+            # Ma attenzione: to_per_pixel restituisce PROBABILITÀ (einsum di probs).
+            # Quindi full_logits_odin contiene già valori ~ [0,1].
+            # L'MSP si calcola come (1 - max(pixel_probs)).
+            
+            anomaly_result_ODIN = 1.0 - torch.max(full_logits_odin, dim=1)[0].squeeze().cpu().numpy()
 
         pathGT = path.replace("images", "labels_masks")                
         if "RoadObsticle21" in pathGT:
@@ -316,12 +327,10 @@ def main():
         if 1 not in np.unique(ood_gts):
             continue              
         else:
-            ood_gts_list.append(ood_gts.flatten())
-            anomaly_score_list["MSP"].append(anomaly_result_MSP.flatten())
-            anomaly_score_list["MaxLogit"].append(anomaly_result_MaxLogit.flatten())
-            anomaly_score_list["MaxEntropy"].append(anomaly_result_MaxEntropy.flatten())
-            anomaly_score_list["RbA"].append(anomaly_result_RbA.flatten())
-        del anomaly_result_MSP, anomaly_result_MaxLogit, anomaly_result_MaxEntropy, ood_gts, mask
+            ood_gts_list.append(ood_gts.flatten().astype(np.uint8))
+            anomaly_score_list["MSP"].append(anomaly_result_MSP.flatten().astype(np.float16))
+            anomaly_score_list["ODIN"].append(anomaly_result_ODIN.flatten().astype(np.float16))
+        del anomaly_result_MSP, anomaly_result_ODIN, ood_gts, mask
         torch.cuda.empty_cache()
 
     for method in anomaly_score_list.keys():

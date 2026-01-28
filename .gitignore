@@ -81,9 +81,10 @@ wandb/
 mlruns/
 
 # Datasets (uncomment if needed)
-# data/
-# datasets/*/images/
-# datasets/*/annotations/
+/datasets/*
+!/datasets/.gitkeep
+/Validation_Dataset/*
+!/Validation_Dataset/.gitkeep
 
 # Lightning logs
 lightning_logs/
