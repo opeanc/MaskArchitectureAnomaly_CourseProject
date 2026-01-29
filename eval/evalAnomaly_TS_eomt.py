@@ -53,25 +53,31 @@ target_transform = Compose([
 ])
 
 def to_per_pixel_logits_semantic(mask_logits, class_logits):
-    # merge transformer's queries and masks
-    # Sigmoid(mask) * Softmax(class)
+    """
+    Args:
+        mask_logits: mask logits [B, Q = 100, H, W]
+        class_logits: class logits including void class [B, Q = 100, num_classes + 1]
+    """
+    # prob that a certain pixel belongs to a certain class
+    # internally applies sigmoid + softmax to obtain probabilities (excluding void class)
     return torch.einsum(
         "bqhw, bqc -> bchw",
         mask_logits.sigmoid(),
-        class_logits.softmax(dim=-1)[..., :-1], # Esclude l'ultima classe 'null'
+        class_logits.softmax(dim=-1)[..., :-1], # Exclude void
     )
 
-def window_inference(model, img, img_size=(640, 640)):
+def window_inference(model, img):
     x = img.float() / 255.0 if img.max() > 1.0 else img.float()
     
     # cropping
-    # left piece (0:1024), righe piece (1024:2048)
+    # left piece (0:1024), right piece (1024:2048)
     crops = torch.cat([x[:, :, :, 0:1024], x[:, :, :, 1024:2048]], dim=0) # [2, 3, 512, 512]
     
+    # model output
     mask_logits_list, class_logits_list = model(crops)
     
-    mask_logits = mask_logits_list[-1] # [2, 100, H_m, W_m]
-    class_logits = class_logits_list[-1] # [2, 100, 20]
+    mask_logits = mask_logits_list[-1] # taking only the output of the final layer [2, 100, H_m, W_m]
+    class_logits = class_logits_list[-1] # taking only the output of the final layer [2, 100, 20]
     
     return mask_logits, class_logits
 
@@ -188,7 +194,7 @@ def main():
     print(f"Found {len(file_list)} images.")
 
     # -------------------------------------------------------------------------
-    # MODALITÀ 1: STANDARD (Una sola temperatura)
+    # MODE 1: STANDARD EVALUATION WITH FIXED TEMPERATURE
     # -------------------------------------------------------------------------
     if not args.best_temperature:
         msp_anomaly_score_list = []
@@ -219,6 +225,7 @@ def main():
                         align_corners=False
                     )
 
+                    # Temperature Scaling
                     scaled_logits = full_logits / args.temperature
                     probs = F.softmax(scaled_logits, dim=1)
                     
@@ -255,7 +262,7 @@ def main():
             print("No valid data found to calculate metrics.")
 
     # -------------------------------------------------------------------------
-    # MODALITÀ 2: BEST TEMPERATURE SEARCH (EoMT Adapted)
+    # MODE 2: BEST TEMPERATURE SEARCH
     # -------------------------------------------------------------------------
     else:
         print("\n--- MODE: BEST TEMPERATURE SEARCH - EoMT ---")
@@ -294,8 +301,7 @@ def main():
                     ) # [1, 19, 1024, 2048]
                     # --- EoMT INFERENCE LOGIC END ---
                     
-                    # Flattening spaziale per salvare RAM e CPU
-                    # Usiamo full_logits.shape[1] per gestire le classi (dovrebbe essere 19)
+                    # logits flattening
                     num_cls = full_logits.shape[1]
                     logits_flat = full_logits.squeeze(0).permute(1, 2, 0).reshape(-1, num_cls).cpu().numpy()
                     
@@ -329,14 +335,15 @@ def main():
         print(f"Total Pixels Analyzed: {all_labels.shape[0]}")
         
         print("Finding the best temperature...")
+        # temperature candidates
         candidates = [0.1, 0.5, 1.0, 1.5, 2.0, 5.0, 10.0, 100.0, 1000.0]
         best_t, best_score = 1.0, 0.0
 
         for t in candidates:
-            # Scalatura
+            # Scaling
             scaled = all_logits / t
             
-            # Softmax stabile
+            # Softmax
             shift = np.max(scaled, axis=1, keepdims=True)
             exp_l = np.exp(scaled - shift)
             probs = exp_l / np.sum(exp_l, axis=1, keepdims=True)
@@ -344,7 +351,7 @@ def main():
             # MSP Score (1 - max_prob)
             scores = 1.0 - np.max(probs, axis=1)
             
-            # Calcolo AUPRC
+            # AUPRC calculation
             auprc = average_precision_score(all_labels, scores)
             print(f"   T={t:<5} -> MSP AuPRC: {auprc*100:.2f}%")
             
@@ -352,7 +359,7 @@ def main():
                 best_score = auprc
                 best_t = t
 
-        # CALCOLO FINALE DI FPR95 PER IL BEST T
+        # FPR95 calculation with best T
         print(f"\nRecalculating FPR95 for Best T = {best_t}...")
         scaled_best = all_logits / best_t
         shift_best = np.max(scaled_best, axis=1, keepdims=True)
