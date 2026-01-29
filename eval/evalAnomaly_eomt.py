@@ -55,25 +55,31 @@ target_transform = Compose(
 
 
 def to_per_pixel_logits_semantic(mask_logits, class_logits):
-    # merge transformer's queries and masks
-    # Sigmoid(mask) * Softmax(class)
+    """
+    Args:
+        mask_logits: mask logits [B, Q = 100, H, W]
+        class_logits: class logits including void class [B, Q = 100, num_classes + 1]
+    """
+    # prob that a certain pixel belongs to a certain class
+    # internally applies sigmoid + softmax to obtain probabilities (excluding void class)
     return torch.einsum(
         "bqhw, bqc -> bchw",
         mask_logits.sigmoid(),
-        class_logits.softmax(dim=-1)[..., :-1], # Esclude l'ultima classe 'null'
+        class_logits.softmax(dim=-1)[..., :-1], # Exclude void
     )
 
-def window_inference(model, img, img_size=(640, 640)):
+def window_inference(model, img):
     x = img.float() / 255.0 if img.max() > 1.0 else img.float()
     
     # cropping
-    # left piece (0:1024), righe piece (1024:2048)
+    # left piece (0:1024), right piece (1024:2048)
     crops = torch.cat([x[:, :, :, 0:1024], x[:, :, :, 1024:2048]], dim=0) # [2, 3, 512, 512]
     
+    # model output
     mask_logits_list, class_logits_list = model(crops)
     
-    mask_logits = mask_logits_list[-1] # [2, 100, H_m, W_m]
-    class_logits = class_logits_list[-1] # [2, 100, 20]
+    mask_logits = mask_logits_list[-1] # taking only the output of the final layer [2, 100, H_m, W_m]
+    class_logits = class_logits_list[-1] # taking only the output of the final layer [2, 100, 20]
     
     return mask_logits, class_logits
 
@@ -97,6 +103,8 @@ def main():
     parser.add_argument('--batch-size', type=int, default=1)
     parser.add_argument('--cpu', action='store_true')
     args = parser.parse_args()
+
+    # prepare data structures to store results
     anomaly_score_list = {
         "MSP": list(),
         "MaxLogit": list(),
@@ -168,43 +176,52 @@ def main():
 
     def score_rba(mask_probs, class_probs, mask_th=0.5, class_th=0.5, reduce="max"):
         """
-        mask_probs:  [Q, H, W]          (sigmoid)
-        class_probs: [Q, C+1]           (softmax, last = no-object)
+        Args:
+            mask_probs:  [Q, H, W]          (sigmoid)
+            class_probs: [Q, C+1]           (softmax, last = no-object)
+            mask_th: threshold on mask probabilities
+            class_th: threshold on class probabilities
+            reduce: "max" or "mean" aggregation method
 
         Returns:
             anomaly_map: [H, W] (float, higher = more anomalous)
         """
 
         # 1. splits ID vs no-object
-        id_probs, _ = class_probs[:, :-1].max(dim=1)  # [Q]
-        noobj_probs = class_probs[:, -1]               # [Q]
+        id_probs, _ = class_probs[:, :-1].max(dim=1)  # highest probability between classes for each query [Q]
+        noobj_probs = class_probs[:, -1]               # probability of no-object for each query [Q]
 
-        # 2. filters useless queries (fondamental)
+        # filters useless queries 
+        # i.e. the ones having high no-object prob and the confidence too low (id prob < threshold)
         keep = (noobj_probs < 0.5) & (id_probs > class_th)
+        # check if there is at least one valid query
         if keep.sum() == 0:
-            # tutte le query rifiutano → tutto OOD
             return torch.ones(mask_probs.shape[1:], device=mask_probs.device)
 
-        mask_probs = mask_probs[keep]
-        id_probs = id_probs[keep]
+        mask_probs = mask_probs[keep]   # [Q_valid, H, W]
+        id_probs = id_probs[keep] # [Q_valid]
 
-        # 3. spatal gating
+
         valid = mask_probs > mask_th
+        # calculate the contribute of each query to each pixel 
         pixel_acceptance = torch.where(
             valid,
-            id_probs[:, None, None] * mask_probs,
+            id_probs[:, None, None] * mask_probs, # Lq * Mq
             torch.zeros_like(mask_probs),
         )
 
-        # 4. RbA aggregation
-        if reduce == "max":
+        # RbA aggregation
+        # max instead of sum because in the case of a "good" pixel (e.g. road)
+        # there will be only one or two queries strongly activated (RbA paper says that queries acts as One vs All classifiers)
+        # so max ≈ sum
+        if reduce == "max":     # max usually more stable than mean
             acceptance = pixel_acceptance.max(dim=0)[0]
         elif reduce == "mean":
             acceptance = pixel_acceptance.mean(dim=0)
         else:
             raise ValueError("reduce must be 'max' or 'mean'")
 
-        # 5. rejection score
+        # p(outlier) = 1 - p(known)
         anomaly_map = 1.0 - acceptance
         return anomaly_map
 

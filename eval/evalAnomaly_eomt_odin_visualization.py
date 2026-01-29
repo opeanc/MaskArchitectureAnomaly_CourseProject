@@ -41,9 +41,9 @@ NUM_CLASSES = 20
 torch.backends.cudnn.deterministic = True
 torch.backends.cudnn.benchmark = True
 
-# --- CONFIGURAZIONE ODIN ---
-ODIN_TEMP = 1000.0  # Temperatura alta
-ODIN_EPS = 0.0014   # Magnitudo perturbazione (ImageNet value)
+# --- ODIN CONFIGURATION ---
+ODIN_TEMP = 1000.0  # High temperature
+ODIN_EPS = 0.0014   # Perturbation magnitude (ImageNet value)
 
 input_transform = Compose(
     [
@@ -60,69 +60,102 @@ target_transform = Compose(
 
 
 def to_per_pixel_logits_semantic(mask_logits, class_logits):
-    # merge transformer's queries and masks
-    # Sigmoid(mask) * Softmax(class)
+    """
+    Args:
+        mask_logits: mask logits [B, Q = 100, H, W]
+        class_logits: class logits including void class [B, Q = 100, num_classes + 1]
+    """
+    # prob that a certain pixel belongs to a certain class
+    # internally applies sigmoid + softmax to obtain probabilities (excluding void class)
     return torch.einsum(
         "bqhw, bqc -> bchw",
         mask_logits.sigmoid(),
-        class_logits.softmax(dim=-1)[..., :-1], # Esclude l'ultima classe 'null'
+        class_logits.softmax(dim=-1)[..., :-1], # Exclude void
     )
 
-def window_inference(model, img, img_size=(640, 640)):
+def window_inference(model, img):
     x = img.float() / 255.0 if img.max() > 1.0 else img.float()
     
     # cropping
-    # left piece (0:1024), righe piece (1024:2048)
-    crops = torch.cat([x[:, :, :, 0:1024], x[:, :, :, 1024:2048]], dim=0) # [2, 3, 512, 512]
+    # left piece (0:1024), right piece (1024:2048)
+    crops = torch.cat([x[:, :, :, 0:1024], x[:, :, :, 1024:2048]], dim=0) # [2, 3, 1024, 1024]
     
+    # model output
     mask_logits_list, class_logits_list = model(crops)
     
-    mask_logits = mask_logits_list[-1] # [2, 100, H_m, W_m]
-    class_logits = class_logits_list[-1] # [2, 100, 20]
+    mask_logits = mask_logits_list[-1] # taking only the output of the final layer [2, 100, H_m, W_m]
+    class_logits = class_logits_list[-1] # taking only the output of the final layer [2, 100, 20]
     
     return mask_logits, class_logits
 
 
 def window_inference_odin_query_level_vis(model, img):
     """
-    Versione per visualizzazione: Ritorna anche i crops perturbati
+    ODIN Query-Level Anomaly Detection Inference
+    
+    Args:
+        model: segmentation model
+        img: input image tensor [1, 3, 1024, 2048]
     """
+    # cropping
     x = img.float() / 255.0 if img.max() > 1.0 else img.float()
     crops = torch.cat([x[:, :, :, 0:1024], x[:, :, :, 1024:2048]], dim=0)
     
-    # 1. SETUP PERTURBAZIONE
+    # --- Perturbation calculation ---
+    # creating a copy of the input crops that requires gradient
     crops_input = crops.clone().detach()
     crops_input.requires_grad = True
     
-    # 2. PRIMA PASSATA (Clean)
+    # Initial Forward Pass
     mask_logits_list, class_logits_list = model(crops_input)
-    class_logits = class_logits_list[-1] 
-    class_logits_scaled = class_logits / ODIN_TEMP 
+    class_logits = class_logits_list[-1] # taking only the output of the final layer [B, Q, num_classes + 1]
 
-    with torch.enable_grad(): 
-        probs = F.softmax(class_logits_scaled, dim=-1) 
-        max_vals, max_indices = torch.max(probs, dim=-1)
-        
+    # apply temperature scaling on class logits
+    class_logits_scaled = class_logits / ODIN_TEMP # [B, Q, num_classes + 1]
+
+    with torch.enable_grad():
+        # softmax and max over classes to identify the predicted class per query
+        probs = F.softmax(class_logits_scaled, dim=-1) # [B, Q, num_classes + 1]
+        max_vals, max_indices = torch.max(probs, dim=-1)  # max_vals: confidence [B, Q], max_indices: predicted class [B, Q]
+
+        # considering only queries that are NOT void (last class, index 19)
+        # and that have a minimum confidence (e.g., > 0.1) to reduce noise
         VOID_IDX = 19 
         valid_queries_mask = (max_indices != VOID_IDX) & (max_vals > 0.1)
         
+        # if (empty image or only background), loss is 0
         if valid_queries_mask.sum() > 0:
+            # calculate ODIN Loss on valid queries
+            # Loss = - sum( log( probability_of_predicted_class ) )
+            
+            # taking only the max_vals of valid queries
             selected_probs = max_vals[valid_queries_mask]
+            
+            # loss calculation
             loss = torch.log(selected_probs + 1e-10).sum()
+            
+            # Backward pass
             model.zero_grad()
             loss.backward()
+            
+            # Perturbation creation
+            # x_new = x + eps * sign(grad)
             perturbation = ODIN_EPS * crops_input.grad.sign()
+            
+            # Apply perturbation on input crops
             crops_perturbed = (crops_input + perturbation).detach()
         else:
+            # using original image if no valid queries
             crops_perturbed = crops_input.detach()
 
-    # 3. SECONDA PASSATA (Perturbed)
+    # --- Final Inference on Perturbed image ---
     with torch.no_grad():
         m_logits_p_list, c_logits_p_list = model(crops_perturbed)
-        m_logits_p = m_logits_p_list[-1]
-        c_logits_p = c_logits_p_list[-1]
+        
+    m_logits_p = m_logits_p_list[-1]
+    c_logits_p = c_logits_p_list[-1]
 
-    # Ritorna anche crops_input (originale crop) e crops_perturbed (con rumore)
+    # we divide by Temperature here so the rest of the pipeline uses scaled logits
     return m_logits_p, c_logits_p / ODIN_TEMP, crops_input, crops_perturbed
 
 
@@ -144,6 +177,8 @@ def main():
     parser.add_argument('--batch-size', type=int, default=1)
     parser.add_argument('--cpu', action='store_true')
     args = parser.parse_args()
+    
+    # prepare data structures to store results
     anomaly_score_list = {
         "MSP": list(),
         "ODIN": list()
@@ -216,7 +251,6 @@ def main():
     for path in glob.glob(os.path.expanduser(str(args.input[0]))):
         print(path)
         images = input_transform((Image.open(path).convert('RGB'))).unsqueeze(0).float().cuda()
-        #images = images.permute(0,3,1,2)
         with torch.no_grad():
             net = model.module if hasattr(model, 'module') else model
             m_logits, c_logits = window_inference(net, images)
@@ -244,83 +278,67 @@ def main():
             
 
         # --- ODIN INFERENCE (Perturbed Input) ---
-        # Richiede gradiente -> No torch.no_grad() globale, ma gestito in window_inference_odin
+        # Outside torch.no_grad() because we need gradients for perturbation
         net = model.module if hasattr(model, 'module') else model
-    
-        # CHIAMATA ALLA FUNZIONE _VIS
         m_logits_odin, c_logits_odin, crops_orig, crops_pert = window_inference_odin_query_level_vis(net, images)
 
-        with torch.no_grad(): 
+        with torch.no_grad(): # performing inference on perturbed input
+            # c_logits_odin already divided by T in window_inference_odin function
             pixel_logits_crops_odin = to_per_pixel_logits_semantic(m_logits_odin, c_logits_odin)
             
-            # Stitching LOGITS ODIN
+            # stitching ODIN
             full_logits_odin = torch.cat([pixel_logits_crops_odin[0:1], pixel_logits_crops_odin[1:2]], dim=-1)
             full_logits_odin = F.interpolate(full_logits_odin, size=(1024, 2048), mode="bilinear", align_corners=False)
             
-            # Calcolo Anomaly Map ODIN
+            # full_logits_odin are already weighted probabilities (sigmoid * softmax)
+            # to_per_pixel returns PROBABILITIES (einsum of probs)
+            # MSP is calculated as (1 - max(pixel_probs)).
             anomaly_result_ODIN = 1.0 - torch.max(full_logits_odin, dim=1)[0].squeeze().cpu().numpy()
 
-            # --- SEZIONE VISUALIZZAZIONE PER IL PAPER ---
-            # Salviamo un'immagine di esempio (es. la prima o una specifica che sai avere problemi)
-            if True: # Metti una condizione se vuoi farlo solo per alcune immagini
+            # --- VISUALIZATION FOR PAPER IMAGE ---
+            if True:
                 
-                # A. Ricostruzione Immagine Perturbata (Stitching dei crop)
-                # crops_pert è [2, 3, 1024, 1024]. Uniamoli per formare l'immagine intera
                 pert_left = crops_pert[0].permute(1, 2, 0).cpu().numpy()
                 pert_right = crops_pert[1].permute(1, 2, 0).cpu().numpy()
                 orig_left = crops_orig[0].permute(1, 2, 0).cpu().numpy()
                 orig_right = crops_orig[1].permute(1, 2, 0).cpu().numpy()
                 
-                full_img_pert = np.concatenate([pert_left, pert_right], axis=1) # [1024, 2048, 3]
+                full_img_pert = np.concatenate([pert_left, pert_right], axis=1) 
                 full_img_orig = np.concatenate([orig_left, orig_right], axis=1)
                 
-                # Calcolo del Rumore (Amplificato per visualizzazione)
                 noise_map = (full_img_pert - full_img_orig)
-                # Normalizziamo il noise tra 0 e 1 per vederlo bene
                 noise_vis = (noise_map - noise_map.min()) / (noise_map.max() - noise_map.min() + 1e-8)
                 
-                # B. Differenza Mappe (ODIN - CLEAN)
-                # Dove è POSITIVO (Rosso): ODIN è più anomalo del Clean (Falso Positivo?)
-                # Dove è NEGATIVO (Blu): ODIN è più sicuro del Clean (Miglioramento?)
-                # Se vedi bordi rossi/blu intorno agli oggetti, è la prova dell'espansione impropria/jitter.
-                diff_map = anomaly_result_ODIN - anomaly_result_MSP # Assicurati che siano stesse dimensioni
+                diff_map = anomaly_result_ODIN - anomaly_result_MSP 
                 
-                # PLOTTING
                 plt.figure(figsize=(20, 10))
                 
-                # 1. Immagine Originale con GT sovrapposta (Opzionale, qui metto immagine raw)
                 plt.subplot(2, 3, 1)
                 plt.imshow(full_img_orig)
                 plt.title("Input Image")
                 plt.axis('off')
                 
-                # 3. Clean Anomaly Map (MSP)
                 plt.subplot(2, 3, 4)
                 plt.imshow(anomaly_result_MSP, cmap='jet', vmin=0, vmax=1)
                 plt.title("Before ODIN (Standard MSP)")
                 plt.colorbar()
                 plt.axis('off')
                 
-                # 4. ODIN Anomaly Map
                 plt.subplot(2, 3, 5)
                 plt.imshow(anomaly_result_ODIN, cmap='jet', vmin=0, vmax=1)
                 plt.title("After ODIN (Query-Level)")
                 plt.colorbar()
                 plt.axis('off')
                 
-                # 5. Mappa delle Differenze (Artifact Map)
                 plt.subplot(2, 3, 6)
-                # Usa cmap 'seismic' o 'bwr' per vedere positivo/negativo
-                # Valori vicini a 0 sono bianchi (nessun cambio).
                 plt.imshow(diff_map, cmap='seismic', vmin=-0.5, vmax=0.5) 
                 plt.title("Difference (ODIN - Clean)\nRed=Artifacts/Increased Anomaly")
                 plt.colorbar()
                 plt.axis('off')
                 
-                # Salva
                 save_name = os.path.basename(path).replace('.webp', '_analysis.png').replace('.png', '_analysis.png')
                 plt.tight_layout()
-                plt.savefig(f"./debug_odin/{save_name}") # Assicurati che la cartella esista
+                plt.savefig(f"./debug_odin/{save_name}")
                 plt.close()
                 print(f"Visualizzazione salvata: {save_name}")
 

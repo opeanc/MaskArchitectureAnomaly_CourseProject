@@ -17,40 +17,41 @@ def load_sample(df_annotations):
 
 def extract_object(image_path, mask_path):
     """
-    Ritaglia l'oggetto dall'immagine originale usando la maschera binaria.
-    Restituisce l'immagine ritagliata e la sua maschera ritagliata.
+    Crops the object from the original image using the binary mask.
+    Returns the cropped image and its cropped mask.
+
+    Args:
+        image_path: Path to the anomaly image file
+        mask_path: Path to the anomaly mask file
     """
     # Load image and mask
     img = cv2.imread(image_path)
     mask = cv2.imread(mask_path, cv2.IMREAD_GRAYSCALE)
 
     # Binarization    
-    # To make sure mask is perfectly black (0) or white (255)
-    # all the values > 127 will become 255, values <= 127 will be transformed in 0
+    # makes sure mask is perfectly black (0) or white (255)
     _, binary_mask = cv2.threshold(mask, 127, 255, cv2.THRESH_BINARY)
 
     # Bounding Box
-    # Questo serve a ritagliare il rettangolo minimo che contiene il cane,
-    # eliminando tutto lo spazio nero inutile intorno.
+    # it takes all the contours from the binary mask
     contours, _ = cv2.findContours(binary_mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
 
     if not contours:
-        print("Nessun oggetto trovato nella maschera!")
+        print("No object found in the mask!")
         return None, None
 
-    # Prendi il contorno più grande (nel caso ci siano piccoli artefatti)
+    # it takes the largest contour (in case there are other small artifacts)
     c = max(contours, key=cv2.contourArea)
     x, y, w, h = cv2.boundingRect(c)
 
-    # 4. Ritaglia (Crop)
-    # Ritagliamo sia l'immagine a colori che la maschera usando le coordinate
+    # Crop
+    # We crop both image and mask using the coordinates
     cropped_img = img[y:y+h, x:x+w]
     cropped_mask = binary_mask[y:y+h, x:x+w]
 
-    # 5. Mascheratura Sfondo (Opzionale ma pulito)
-    # Applichiamo la maschera all'immagine ritagliata per rendere nero
-    # lo sfondo immediato (l'erba che potrebbe essere rimasta dentro il rettangolo)
-    # Questo passaggio è fondamentale per non incollare pezzetti di erba.
+    # Background Masking
+    # we apply the mask to the cropped image to make the 
+    # immediate background (grass that might have remained inside the rectangle) black
     cropped_img = cv2.bitwise_and(cropped_img, cropped_img, mask=cropped_mask)
 
     return cropped_img, cropped_mask
@@ -58,13 +59,19 @@ def extract_object(image_path, mask_path):
 
 def get_random_scale(img, mask, min_scale=0.3, max_scale=1.0):
     """
-    Ridimensiona l'oggetto casualmente, mantenendo l'aspect ratio.
+    Scales the object randomly within the given range.
+
+    Args:
+        img: anomaly image (after extraction)
+        mask: anomaly mask (after extraction)
+        min_scale: minimum scaling factor
+        max_scale: maximum scaling factor
     """
     h, w = img.shape[:2]
     scale = random.uniform(min_scale, max_scale)
     new_w = int(w * scale)
     new_h = int(h * scale)
-    # Evita dimensioni 0
+    # Avoid zero dimensions
     new_w = max(1, new_w)
     new_h = max(1, new_h)
 
@@ -76,83 +83,94 @@ def get_random_scale(img, mask, min_scale=0.3, max_scale=1.0):
 
 def check_ego_vehicle_overlap(bg_mask, x, y, h_obj, w_obj, void_id=255, threshold=0.3):
     """
-    Controlla se la posizione proposta si sovrappone all'ego-vehicle.
-    In Cityscapes, l'ego-vehicle è sempre etichettato come VOID (255).
-    Inoltre, l'ego-vehicle è sempre nella parte bassa dell'immagine.
+    Checks if the proposed position overlaps with the ego-vehicle.
+    In Cityscapes, the ego-vehicle is always labeled as VOID (255).
+    Additionally, the ego-vehicle is always in the lower part of the image.
+
+    Args:
+        bg_mask: Cityscapes mask
+        x: top-left x coordinate of the object
+        y: top-left y coordinate of the object
+        h_obj: height of the object
+        w_obj: width of the object
+        void_id: pixel value representing the void class (default is 255)
+        threshold: maximum allowed overlap ratio with the void class
     """
     H, W = bg_mask.shape
 
-    # Estrai la ROI dalla maschera di background
+    # extract the ROI from the background mask
     roi = bg_mask[y:y+h_obj, x:x+w_obj]
 
-    # Calcoliamo quanti pixel nella ROI sono 'Void' (255)
+    # Calculate how many pixels in the ROI are void (255)
     void_pixels = np.sum(roi == void_id)
     total_pixels = h_obj * w_obj
     void_ratio = void_pixels / total_pixels
 
-    # Se l'oggetto è troppo sovrapposto al Void (spesso bordi neri o ego-vehicle), scartiamo.
-    # Aggiungiamo un check posizionale: l'ego vehicle è in basso al centro.
-    # Se y è molto basso (es. > 80% dell'immagine) e c'è void, è quasi sicuramente l'auto.
+    # If the object is too overlapped with the void (often black borders or ego-vehicle), discard.
+    # Add a positional check: the ego vehicle is at the bottom center.
+    # If y is very low (e.g., > 80% of the image) and there is void, it is almost certainly the car.
     is_bottom = y > (H * 0.75)
 
-    if is_bottom and void_ratio > 0.1: # Tolleranza stretta in basso
-        return True # Sovrapposizione rilevata (Rifiuta)
+    if is_bottom and void_ratio > 0.1: # Tight tolerance at the bottom
+        return True # overlap detected (Reject)
 
-    if void_ratio > threshold: # Tolleranza più ampia altrove (es. bordi neri)
+    if void_ratio > threshold: # Wider tolerance elsewhere (e.g., black borders)
         return True
 
-    return False # Posizione valida
+    return False # Valid position
 
 def get_smart_position(bg_shape, obj_shape, label_type, bg_mask, max_attempts=50, margin=70):
     """
-    Trova una coordinata (x, y) valida con un margine di sicurezza dai bordi.
-    margin: distanza minima in pixel dai bordi dell'immagine.
+    It finds a coordinate (x, y) having a look at the label type and avoiding
+    overlaps with the ego-vehicle.
+
+    Args:
+        bg_shape: shape (C, H, W) of the background image
+        obj_shape: shape (C, H, W) of the object image
+        label_type: ("air", "ground", "obj")
+        bg_mask: mask of the background image (Cityscapes)
+        max_attempts: maximum number of attempts to find a valid position
+        margin: minimum distance in pixels from the image borders.
     """
     H_bg, W_bg = bg_shape[:2]
     h_obj, w_obj = obj_shape[:2]
 
-    # Calcoliamo i limiti effettivi dove possiamo mettere l'angolo top-left (x, y)
-    # L'oggetto deve finire a (W - margin), quindi x non può superare (W - w - margin)
-    # Inoltre x non può essere minore di margin.
-
+    # defining a safe area to place the object
     x_min = margin
     x_max = W_bg - w_obj - margin
-
     y_min = margin
     y_max = H_bg - h_obj - margin
 
-    # Se l'oggetto è troppo grande per rispettare i margini, riduciamo le pretese
+    # if the object is too large to respect the margins, remove margins
     if x_max <= x_min or y_max <= y_min:
-        # Fallback: prova a inserirlo senza margini (o rifiuta se proprio non entra)
+        # try to insert it without margins (or reject if it doesn't fit)
         x_min, y_min = 0, 0
         x_max = W_bg - w_obj
         y_max = H_bg - h_obj
         if x_max < 0 or y_max < 0:
-            return None # L'oggetto è più grande dello sfondo!
+            return None # obj too large for the background
 
     for _ in range(max_attempts):
-        # 1. Determina la Y (Altezza)
-        # Nota: y_max è già calcolato considerando il margine inferiore
+        # determine y (Height)
 
         if label_type == 'air':
-            # Parte alta
+            # Upper zone
             limit = max(y_min, y_max // 2)
             y = random.randint(y_min, limit)
 
         elif label_type == 'ground':
-            # Parte bassa
-            # Evitiamo di partire troppo in alto, ma rispettiamo y_min
+            # Lower zone
+            # Avoid starting too high, but respect y_min
             start_y = max(y_min, y_max // 3)
             y = random.randint(start_y, y_max)
 
         else: # label_type == 'obj'
             y = random.randint(y_min, y_max)
 
-        # 2. Determina la X (Larghezza)
+        # determine x (Width)
         x = random.randint(x_min, x_max)
 
-        # 3. Controllo Ego-Vehicle
-        # Passiamo le coordinate candidate
+        # Ego-Vehicle Check
         if not check_ego_vehicle_overlap(bg_mask, x, y, h_obj, w_obj):
             return (x, y)
 
@@ -162,50 +180,46 @@ def get_smart_position(bg_shape, obj_shape, label_type, bg_mask, max_attempts=50
 
 def augment_object(img, mask):
     """
-    Applica Data Augmentation geometrica e fotometrica all'oggetto COCO.
+    Applies geometric and photometric Data Augmentation to the object.
+    
     Args:
-        img: Immagine oggetto ritagliata (BGR)
-        mask: Maschera oggetto (Gray)
+        img: Cropped object image (BGR)
+        mask: Object mask (Gray)
     """
     h, w = img.shape[:2]
 
-    # --- 1. GEOMETRIC: Random Flip ---
+    # --- 1. Random Flip ---
     if random.random() < 0.5:
         img = cv2.flip(img, 1)
         mask = cv2.flip(mask, 1)
 
-    # --- 2. GEOMETRIC: Random Rotation (-15° a +15°) ---
-    # Ruotare aiuta molto, ma non esagerare o l'oggetto viene tagliato
-    if random.random() < 0.7: # 70% di probabilità
+    # --- 2. Random Rotation (-15degree to +15degree) ---
+    if random.random() < 0.7: # 70% probability
         angle = random.uniform(-15, 15)
         center = (w // 2, h // 2)
 
-        # Matrice di rotazione
+        # Rotation matrix
         M = cv2.getRotationMatrix2D(center, angle, 1.0)
 
-        # Applica rotazione
-        # IMPORTANTE: borderValue=0 (nero) per evitare artefatti ai bordi
+        # Apply rotation
         img = cv2.warpAffine(img, M, (w, h), flags=cv2.INTER_LINEAR, borderMode=cv2.BORDER_CONSTANT, borderValue=(0,0,0))
-        # IMPORTANTE: maschera usa INTER_NEAREST per restare binaria
         mask = cv2.warpAffine(mask, M, (w, h), flags=cv2.INTER_NEAREST, borderMode=cv2.BORDER_CONSTANT, borderValue=0)
 
-    # --- 3. PHOTOMETRIC: Color Jitter (Brightness & Contrast) ---
-    # Modifichiamo leggermente i colori PRIMA che il blending li uniformi.
-    # Questo aggiunge "carattere" all'anomalia.
+    # --- 3. Color Jitter (brightness and contrast) ---
+    # slightly modify the colors to better blend with the background
     if random.random() < 0.8:
-        # Contrasto: moltiplicatore (es. 0.8 a 1.2)
+        # contrast: multiplier ( 0.8 to 1.2)
         alpha = random.uniform(0.8, 1.2)
-        # Luminosità: addendo (es. -30 a +30)
+        # brightness: addend (-30 to +30)
         beta = random.uniform(-30, 30)
 
-        # Formula: pixel = alpha * pixel + beta
         img = cv2.convertScaleAbs(img, alpha=alpha, beta=beta)
 
-    # --- 4. PHOTOMETRIC: Saturation Jitter ---
-    # A volte cambiamo la saturazione per avere oggetti più/meno vivi
+    # --- 4. sSaturation Jitter ---
+    # change the saturation to have more/less vivid objects
     if random.random() < 0.5:
         hsv = cv2.cvtColor(img, cv2.COLOR_BGR2HSV).astype("float32")
-        # Moltiplica canale S (Saturazione)
+
         sat_factor = random.uniform(0.7, 1.3)
         hsv[:, :, 1] *= sat_factor
         hsv[:, :, 1] = np.clip(hsv[:, :, 1], 0, 255)
@@ -216,12 +230,12 @@ def augment_object(img, mask):
 
 def perform_color_transfer(source, target, strength=0.4):
     """
-    Applica il color transfer ma lo mixa con l'originale per evitare
-    l'effetto "fantasma/camouflage".
+    Applies color transfer but mixes it with the original to avoid a "ghost/camouflage" effect.
 
     Args:
-        strength (float): 0.0 = Colore Originale, 1.0 = Totale Camouflage.
-                          Un valore tra 0.4 e 0.6 è ideale.
+        source: source image (object)
+        target: target image (background)
+        strength (float): 0.0 = original color, 1.0 = total camouflage (between 0.4 and 0.6 recommended)
     """
     source_lab = cv2.cvtColor(source, cv2.COLOR_BGR2LAB).astype("float32")
     target_lab = cv2.cvtColor(target, cv2.COLOR_BGR2LAB).astype("float32")
@@ -229,52 +243,52 @@ def perform_color_transfer(source, target, strength=0.4):
     (l_mean_src, l_std_src) = cv2.meanStdDev(source_lab)
     (l_mean_tar, l_std_tar) = cv2.meanStdDev(target_lab)
 
-    # Applica il transfer matematico completo
+    # Apply the full mathematical transfer
     source_lab_t = source_lab.copy()
 
-    # Sottrai media source
+    # Subtract source mean
     source_lab_t -= np.array([l_mean_src.flatten()]).astype("float32")
 
-    # Scala deviazione standard
-    # Limitiamo lo scaling: se lo sfondo è troppo piatto (std vicina a 0),
-    # l'oggetto perde tutti i dettagli. Aggiungiamo un clamp.
+    # Scale standard deviation
+    # Limit scaling: if the background is too flat (std close to 0),
+    # the object loses all details. Add a clamp.
     scale = l_std_tar.flatten() / (l_std_src.flatten() + 1e-5)
-    scale = np.clip(scale, 0.5, 1.5) # Evita contrasti troppo esplosivi o piatti
+    scale = np.clip(scale, 0.5, 1.5) # Avoid too explosive or flat contrasts
 
     source_lab_t *= scale
 
-    # Aggiungi media target
+    # Add target mean
     source_lab_t += np.array([l_mean_tar.flatten()]).astype("float32")
     source_lab_t = np.clip(source_lab_t, 0, 255)
 
-    # Converti il risultato trasferito in BGR
+    # Convert the transferred result to BGR
     transfer = cv2.cvtColor(source_lab_t.astype("uint8"), cv2.COLOR_LAB2BGR)
 
-    # --- IL TRUCCO: BLENDING ---
-    # Mixiamo l'immagine originale (source) con quella trasferita (transfer)
-    # strength basso -> più simile all'originale
-    # strength alto -> più simile allo sfondo
+    # low strength -> more similar to the original
+    # high strength -> more similar to the background
     final_result = cv2.addWeighted(transfer, strength, source, 1.0 - strength, 0)
 
     return final_result
 
 def apply_depth_blur(img, y_pos, total_height):
     """
-    Simula "depth blur based on the position".
-    Assunzione: Più in alto è l'oggetto nell'immagine, più è lontano/sfocato.
+    Simulates "depth blur based on the position".
+    Assumption used: the higher the object, the farther it is.
+
+    Args:
+        img: image to apply the depth blur (object)
+        y_pos: vertical position of the object (top-left corner)
+        total_height: total height of the image
     """
-    # Normalizza la posizione Y tra 0 e 1
+    # normalize y position between 0 and 1
     rel_y = y_pos / total_height
 
-    # Se l'oggetto è nella metà superiore (lontano) o molto in basso (troppo vicino/mosso)
-    # applichiamo un blur.
-    # Logica semplificata: Più in alto = più blur (sfocatura distanza)
-    # Cityscapes horizon è circa a 0.4-0.5 dell'altezza.
+    # Higher = more blur (distance blur)
 
     k_size = 0
-    if rel_y < 0.5: # Lontano / Orizzonte
+    if rel_y < 0.5: # Far (slight blur)
         k_size = 3
-    elif rel_y > 0.85: # Vicinissimo (Motion Blur rapido della strada)
+    elif rel_y > 0.85: # Very close (Rapid motion blur of the road)
         k_size = 5
 
     if k_size > 0:
@@ -284,49 +298,54 @@ def apply_depth_blur(img, y_pos, total_height):
 
 def add_noise(img, strength=0.05):
     """
-    Aggiunge "color noise"  per simulare la grana del sensore.
+    Adds "color noise" to simulate sensor grain.
+
+    Args:
+        img: image to add noise (object)
+        strength: noise strength (default 0.05)
     """
     noise = np.random.randn(*img.shape).astype(np.float32)
-    # Scaliamo il rumore e lo aggiungiamo
+    # scale the noise and add it
     noisy_img = img.astype(np.float32) + (noise * strength * 255)
     return np.clip(noisy_img, 0, 255).astype(np.uint8)
 
 
 
 
-def inject_anomaly(city_img, city_mask, coco_img_path, coco_mask_path, label, anomaly_id=254):
+def inject_anomaly(city_img, city_mask, obj_img_path, obj_mask_path, label, anomaly_id=254):
     """
-    Funzione Principale:
-    1. Estrae l'oggetto da COCO.
-    2. Esegue il blending sull'immagine RGB (Smooth + Brightness).
-    3. Aggiorna la maschera di segmentazione (Hard Paste).
+    Main Function:
+    1. Extracts the object + mask
+    2. Performs trasformations of the object
+    3. Updates the segmentation mask
 
     Args:
-        city_img: immagine cityscapes
-        city_mask: maschera cityscapes
-        coco_img_path: PATH immagine oggetto
-        coco_mask_path: PATH maschera oggetto
-        label: label dell'oggetto
-        anomaly_id: L'ID numerico da assegnare ai pixel dell'anomalia nella maschera (es. 254)
+        city_img: cityscapes image
+        city_mask: cityscapes mask
+        obj_img_path: object image PATH
+        obj_mask_path: object mask PATH
+        label: object label
+        anomaly_id: The numerical ID to assign to the anomaly pixels in the mask (254)
     """
 
-    # 1. ESTRAZIONE AL VOLO
-    obj_img, obj_mask = extract_object(coco_img_path, coco_mask_path)
+    # ON-THE-FLY EXTRACTION
+    obj_img, obj_mask = extract_object(obj_img_path, obj_mask_path)
 
     if obj_img is None:
-        # Se qualcosa va storto nell'estrazione, ritorna gli originali senza modifiche
-        print("Attenzione: Oggetto non trovato nella maschera COCO.")
+        # if something is wrong during extraction, return the original
+        print("Warning: Object not found.")
         return city_img, city_mask
 
-    # Data augmentation
+    # DATA AUGMENTATION
     obj_img, obj_mask = augment_object(obj_img, obj_mask)
 
-    # suggerito dal paper di fishyscapes
+    # suggested by the Fishyscapes paper
     obj_img_rescale, obj_mask_rescale = get_random_scale(obj_img, obj_mask, min_scale=0.3, max_scale=1.0)
 
-    # Dimensioni dell'oggetto ritagliato
+    # Dimensions of the cropped object
     h_obj, w_obj = obj_img_rescale.shape[:2]
 
+    # SMART POSITIONING
     position = get_smart_position(city_img.shape, obj_img_rescale.shape, label, city_mask)
     print(position)
 
@@ -335,38 +354,35 @@ def inject_anomaly(city_img, city_mask, coco_img_path, coco_mask_path, label, an
 
     x_pos, y_pos = position
 
-    # Controlli di sicurezza sui bordi (per evitare crash se l'oggetto esce dall'immagine)
+    # safety checks on the edges
     if x_pos + w_obj > city_img.shape[1] or y_pos + h_obj > city_img.shape[0]:
-        print("Attenzione: L'oggetto esce dai bordi dell'immagine Cityscapes.")
+        print("Warning: The object goes out of the Cityscapes image boundaries.")
         return city_img, city_mask
 
-    # --- FASE A: BLENDING AVANZATO (NUOVO) ---
+    # --- DOMAIN ADAPTATION ---
     roi = city_img[y_pos:y_pos+h_obj, x_pos:x_pos+w_obj]
 
-    # 1. COLOR TRANSFER (Sostituisce Brightness Adaptation)
-    # Trasferisce l'atmosfera "grigia" di Cityscapes sul cane "colorato"
+    # COLOR TRANSFER
     obj_img_adjusted = perform_color_transfer(obj_img_rescale, roi)
 
-    # 2. DEPTH BLUR
-    # Sfoca leggermente se l'oggetto è lontano
+    # DEPTH BLUR
     obj_img_adjusted = apply_depth_blur(obj_img_adjusted, y_pos, city_img.shape[0])
 
-    # 3. NOISE
-    # Aggiunge grana per uniformare
+    # NOISE
     obj_img_adjusted = add_noise(obj_img_adjusted)
 
-    # 4. ALPHA SMOOTHING (Invariato)
+    # EDGE SMOOTHING
     float_mask = obj_mask_rescale.astype(float) / 255.0
     float_mask_blurred = cv2.GaussianBlur(float_mask, (3, 3), 0) # Kernel ridotto per dettagli fini
     alpha = np.dstack([float_mask_blurred] * 3)
 
-    # 5. COMPOSITING
+    # COMPOSITING
     blended_roi = (alpha * obj_img_adjusted) + ((1 - alpha) * roi)
 
     final_img = city_img.copy()
     final_img[y_pos:y_pos+h_obj, x_pos:x_pos+w_obj] = blended_roi.astype(np.uint8)
 
-    # --- FASE B: AGGIORNAMENTO MASCHERA (INVARIATO) ---
+    # --- MASK UPDATE ---
     final_mask = city_mask.copy()
     roi_mask = final_mask[y_pos:y_pos+h_obj, x_pos:x_pos+w_obj]
     roi_mask[obj_mask_rescale > 127] = anomaly_id

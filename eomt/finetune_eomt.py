@@ -63,24 +63,37 @@ def freeze_lower_layers(model):
 
 
 def split_batch_left_right(images, masks):
+    
     if masks.dim() == 3:
-        masks = masks.unsqueeze(1)
+        masks = masks.unsqueeze(1) # from [B, H, W] to [B, 1, H, W]
+
     h, w = images.shape[2], images.shape[3]
-    half_w = w // 2
+    half_w = w // 2 # cut point
+
+    # images and masks are concatenated left-right in the batch dimension
+    # i.e. [B*2, C, H, W//2]
     images_out = torch.cat([images[..., :half_w], images[..., half_w:]], dim=0)
     masks_out = torch.cat([masks[..., :half_w], masks[..., half_w:]], dim=0)
     return images_out, masks_out
 
 
 def prepare_targets_for_criterion(targets, device):
-    new_targets = []
-    for i in range(targets.shape[0]):
-        gt = targets[i]
-        if gt.dim() == 3: gt = gt.squeeze(0)
-        labels = torch.unique(gt)
-        labels = labels[labels != 255]
+    """
+    Converts the ground truth masks in EoMT model output
 
-        if len(labels) == 0:
+    Args:
+        targets: ground truth mask
+        device: CUDA or CPU
+    """
+    new_targets = []
+
+    for i in range(targets.shape[0]): # targets.shape[0] = Batch
+        gt = targets[i] # we take one mask at time from the batch
+        if gt.dim() == 3: gt = gt.squeeze(0) 
+        labels = torch.unique(gt) # classes contained in the mask
+        labels = labels[labels != 255] # removing void
+
+        if len(labels) == 0: # avoiding training crash (if the crop contains only void) by returning empty tensor
             new_targets.append({
                 "labels": torch.tensor([], device=device, dtype=torch.long),
                 "masks": torch.zeros((0, gt.shape[0], gt.shape[1]), device=device, dtype=torch.bool)
@@ -89,8 +102,8 @@ def prepare_targets_for_criterion(targets, device):
 
         masks_list = []
         for label in labels:
-            masks_list.append(gt == label)
-        masks_tensor = torch.stack(masks_list, dim=0)
+            masks_list.append(gt == label) # creating one binary mask (True/False) for each class - ONE FOR EACH CLASS
+        masks_tensor = torch.stack(masks_list, dim=0) # [num_classes, H, W]
 
         new_targets.append({
             "labels": labels.long().to(device),
@@ -108,18 +121,18 @@ def get_optimizer(model, learning_rate=1e-4, weight_decay=0.05):
 
 
 def mask_to_tensor_transform(x):
-    # Converte PIL Image o array in Tensore Long [1, H, W]
+    # converts PIL Image or array into Long tensor [1, H, W]
     return torch.from_numpy(np.array(x)).long().unsqueeze(0)
 
 ### TRAINING SETTINGS ###
 class TrainConfig:
     def __init__(self, args):
-        # I path vengono ora presi dagli argomenti
+        # paths taken from arguments
         self.CITYSCAPES_DIR = args.cityscapes_dir
         self.OBJ_DIR = args.obj_dir
         self.CHECKPOINT_DIR = args.save_dir
         
-        # Altri iperparametri presi dagli argomenti o default
+        # other hyperparameters taken from arguments or default
         self.BATCH_SIZE = args.batch_size
         self.NUM_WORKERS = args.num_workers
         self.EPOCHS = args.epochs
@@ -142,11 +155,6 @@ input_transform_cityscapes = Compose(
 target_transform_cityscapes = Compose(
     [
         Resize((1024, 2048), Image.NEAREST),
-        # Sostituiamo ToTensor() con una lambda custom per le maschere:
-        # 1. np.array(x) prende i valori interi dei pixel (es. 0, 7, 254...)
-        # 2. torch.from_numpy(...) crea il tensore
-        # 3. .long() converte in intero 64-bit (necessario per le loss di classificazione)
-        # 4. .unsqueeze(0) aggiunge la dimensione del canale -> [1, H, W]
         mask_to_tensor_transform
     ]
 )
@@ -156,15 +164,16 @@ target_transform_cityscapes = Compose(
 def main():
     parser = ArgumentParser()
     
+    # arguments for paths
     parser.add_argument('--cityscapes_dir', required=True, help="Path to Cityscapes root directory")
     parser.add_argument('--obj_dir', required=True, help="Path to Anomaly Objects directory")
     parser.add_argument('--save_dir', default=os.path.join(PROJECT_ROOT, "trained_models"), help="Directory to save checkpoints")
     parser.add_argument('--config_path', default=os.path.join(PROJECT_ROOT, "eomt/configs/dinov2/cityscapes/semantic/eomt_base_640.yaml"))
     
-    # Argomenti Caricamento Modello
+    # arguments for loading pretrained weights
     parser.add_argument('--pretrained_weights', required=True, help="Path to .bin or .pth pretrained weights")
     
-    # Argomenti Training
+    # arguments for training
     parser.add_argument('--subset', default="train")
     parser.add_argument('--num_workers', type=int, default=4)
     parser.add_argument('--batch-size', type=int, default=1)
@@ -200,19 +209,17 @@ def main():
         **network_kwargs,
     )
 
-    # Determine device based on CUDA availability and args.cpu
     if cfg.DEVICE.type == 'cuda':
-        # Wrap with DataParallel if using CUDA
+        # wrap in DataParallel if using CUDA
         model = torch.nn.DataParallel(model).to(cfg.DEVICE)
         print(f"Model moved to GPU: {cfg.DEVICE}")
     else:
-        model = model.to(cfg.DEVICE) # Move to CPU
+        model = model.to(cfg.DEVICE) # move to CPU
         print(f"Model moved to CPU: {cfg.DEVICE}")
 
     def load_my_state_dict(model, state_dict):
         own_state = model.state_dict()
         for name, param in state_dict.items():
-            # removing network. and module.
             clean_name = name.replace("network.", "").replace("module.", "")
             found = False
 
@@ -278,21 +285,26 @@ def main():
             images_in, masks_in = split_batch_left_right(images, masks)
 
             mask_logits_list, class_logits_list = model(images_in)
-            pred_mask_logits = mask_logits_list[-1]
-            pred_class_logits = class_logits_list[-1]
+            pred_mask_logits = mask_logits_list[-1] # taking only the output of the final layer
+            pred_class_logits = class_logits_list[-1] # taking only the output of the final layer
 
+            # determine if there are outlier pixels in the batch
             is_outlier_batch = (masks_in == cfg.ANOMALY_ID).any()
 
             if is_outlier_batch:
+                # prepares anomaly binary mask
                 outlier_mask = (masks_in == cfg.ANOMALY_ID).float().squeeze(1)
+                # calculate OOD loss
                 ood_val = ood_loss_fn(pred_mask_logits, pred_class_logits, outlier_mask)
                 loss = lambda_ood * ood_val
 
-                # Update stringa log
+                # Update log string
                 loss_type = "RbA_OE" if useRbaLoss else "MSP_OE"
             else:
+                # transform ground truth masks to EoMT format
                 clean_targets = prepare_targets_for_criterion(masks_in, cfg.DEVICE)
 
+                # standard segmentation loss
                 loss_dict = clean_criterion(
                     masks_queries_logits=pred_mask_logits,
                     class_queries_logits=pred_class_logits,
@@ -304,17 +316,18 @@ def main():
                         loss_dict["loss_cross_entropy"] * 2.0)
                 loss_type = "Clean"
 
+            # Gradient Accumulation
             loss = loss / ACCUMULATION_STEPS
             if isinstance(loss, torch.Tensor) and loss.requires_grad:
-                loss.backward()
+                loss.backward() # calculate gradients
                 current_loss_val = loss.item() * ACCUMULATION_STEPS
             else:
                 current_loss_val = 0.0
 
             if (i + 1) % ACCUMULATION_STEPS == 0:
                 torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=0.01)
-                optimizer.step()
-                optimizer.zero_grad()
+                optimizer.step() # update weights
+                optimizer.zero_grad() # reset gradients
                 pbar.set_postfix({"Type": loss_type, "Loss": f"{current_loss_val:.4f} (Step)"})
             else:
                 pbar.set_postfix({"Type": loss_type, "Loss": f"{current_loss_val:.4f} (Acc)"})

@@ -41,8 +41,8 @@ torch.backends.cudnn.deterministic = True
 torch.backends.cudnn.benchmark = True
 
 # --- CONFIGURAZIONE ODIN ---
-ODIN_TEMP = 1000.0  # Temperatura alta
-ODIN_EPS = 0.0014   # Magnitudo perturbazione (ImageNet value)
+ODIN_TEMP = 1000.0  # High temperature for scaling logits
+ODIN_EPS = 0.0014   # Perturbation magnitude (ImageNet value)
 
 input_transform = Compose(
     [
@@ -59,79 +59,88 @@ target_transform = Compose(
 
 
 def to_per_pixel_logits_semantic(mask_logits, class_logits):
-    # merge transformer's queries and masks
-    # Sigmoid(mask) * Softmax(class)
+    """
+    Args:
+        mask_logits: mask logits [B, Q = 100, H, W]
+        class_logits: class logits including void class [B, Q = 100, num_classes + 1]
+    """
+    # prob that a certain pixel belongs to a certain class
+    # internally applies sigmoid + softmax to obtain probabilities (excluding void class)
     return torch.einsum(
         "bqhw, bqc -> bchw",
         mask_logits.sigmoid(),
-        class_logits.softmax(dim=-1)[..., :-1], # Esclude l'ultima classe 'null'
+        class_logits.softmax(dim=-1)[..., :-1], # Exclude void
     )
 
-def window_inference(model, img, img_size=(640, 640)):
+def window_inference(model, img):
     x = img.float() / 255.0 if img.max() > 1.0 else img.float()
     
     # cropping
-    # left piece (0:1024), righe piece (1024:2048)
-    crops = torch.cat([x[:, :, :, 0:1024], x[:, :, :, 1024:2048]], dim=0) # [2, 3, 512, 512]
+    # left piece (0:1024), right piece (1024:2048)
+    crops = torch.cat([x[:, :, :, 0:1024], x[:, :, :, 1024:2048]], dim=0) # [2, 3, 1024, 1024]
     
+    # model output
     mask_logits_list, class_logits_list = model(crops)
     
-    mask_logits = mask_logits_list[-1] # [2, 100, H_m, W_m]
-    class_logits = class_logits_list[-1] # [2, 100, 20]
+    mask_logits = mask_logits_list[-1] # taking only the output of the final layer [2, 100, H_m, W_m]
+    class_logits = class_logits_list[-1] # taking only the output of the final layer [2, 100, 20]
     
     return mask_logits, class_logits
 
 
 def window_inference_odin(model, img):
     """
-    Esegue l'inferenza ODIN con perturbazione dell'input 'Per-Crop'.
+    ODIN Pixel-Wise Anomaly Detection Inference
+    
+    Args:
+        model: segmentation model
+        img: input image tensor [1, 3, 1024, 2048]
     """
     x = img.float() / 255.0 if img.max() > 1.0 else img.float()
     
-    # Creazione Crops
-    crops = torch.cat([x[:, :, :, 0:1024], x[:, :, :, 1024:2048]], dim=0)
+    # cropping
+    crops = torch.cat([x[:, :, :, 0:1024], x[:, :, :, 1024:2048]], dim=0) # [2, 3, 1024, 1024]
     
-    # --- 1. Calcolo Perturbazione ---
-    # Creiamo una copia del tensore che supporti il gradiente
+    # --- Perturbation calculation ---
+    # creating a copy of the input crops that requires gradient
     crops_input = crops.clone().detach()
     crops_input.requires_grad = True
     
-    # Forward Pass iniziale
+    # Initial Forward Pass
     mask_logits_list, class_logits_list = model(crops_input)
-    mask_logits = mask_logits_list[-1]
-    class_logits = class_logits_list[-1]
+    mask_logits = mask_logits_list[-1] # taking only the output of the final layer [N_crops, Q = 100, H, W]
+    class_logits = class_logits_list[-1] # taking only the output of the final layer [N_crops, Q = 100, num_classes + 1]
     
-    # Applica Temperature Scaling sui Logits per il calcolo del gradiente
-    # Questo serve a calcolare la 'confidenza' calibrata
+    # apply Temperature Scaling on Logits for gradient calculation
     class_logits_scaled = class_logits / ODIN_TEMP
     
-    # Calcoliamo le probabilità per-pixel (Mask * Softmax(Scaled_Logits))
-    # Riutilizziamo la funzione helper. Softmax verrà applicata dentro.
+    # Calculate per-pixel probabilities (semantic fusion) (Mask * Softmax(Scaled_Logits))
     pixel_probs = to_per_pixel_logits_semantic(mask_logits, class_logits_scaled)
     
-    # ODIN Loss: Massimizzare la log-probabilità della classe vincente (In-Distribution Confidence)
+    # taking only the max probability per pixel
     max_scores, _ = torch.max(pixel_probs, dim=1) # [N_crops, H, W]
+    # global ODIN loss
     loss = torch.log(max_scores + 1e-10).sum()
     
-    # Calcolo Gradiente
+    # Backward Pass
     model.zero_grad()
     loss.backward()
     
-    # Creazione Immagine Perturbata (Gradient Ascent: vogliamo AUMENTARE lo score ID)
+    # create Perturbed input image
     # x_new = x + eps * sign(grad)
     perturbation = ODIN_EPS * crops_input.grad.sign()
     crops_perturbed = (crops_input + perturbation).detach()
     
-    # --- 2. Inference Finale su Immagine Perturbata ---
+    # --- Final Inference on Perturbed image ---
     with torch.no_grad():
         m_logits_p_list, c_logits_p_list = model(crops_perturbed)
 
     m_logits_p = m_logits_p_list[-1]
     c_logits_p = c_logits_p_list[-1]
     
-    # Ritorniamo i logit. 
-    # NOTA: Dividiamo i class_logits per T qui, così la successiva 'softmax' (in to_per_pixel...)
-    # calcolerà effettivamente softmax(logits / T).
+    # Return the logits
+    # we divide the class_logits by T here, so that the subsequent 'softmax' (in to_per_pixel function)
+    # will actually compute softmax(logits / T)
     return m_logits_p, c_logits_p / ODIN_TEMP
 
 
@@ -153,6 +162,8 @@ def main():
     parser.add_argument('--batch-size', type=int, default=1)
     parser.add_argument('--cpu', action='store_true')
     args = parser.parse_args()
+
+    # prepare data structures to store results
     anomaly_score_list = {
         "MSP": list(),
         "ODIN": list()
@@ -225,7 +236,6 @@ def main():
     for path in glob.glob(os.path.expanduser(str(args.input[0]))):
         print(path)
         images = input_transform((Image.open(path).convert('RGB'))).unsqueeze(0).float().cuda()
-        #images = images.permute(0,3,1,2)
         with torch.no_grad():
             net = model.module if hasattr(model, 'module') else model
             m_logits, c_logits = window_inference(net, images)
@@ -247,30 +257,26 @@ def main():
 
             full_probs = F.softmax(full_logits, dim=1)
             
-            
             # MSP
             anomaly_result_MSP = 1.0 - torch.max(full_probs, dim=1)[0].squeeze().cpu().numpy()
             
 
         # --- ODIN INFERENCE (Perturbed Input) ---
-        # Richiede gradiente -> No torch.no_grad() globale, ma gestito in window_inference_odin
+        # Outside torch.no_grad() because we need gradients for perturbation
         net = model.module if hasattr(model, 'module') else model
         m_logits_odin, c_logits_odin = window_inference_odin(net, images)
 
-        with torch.no_grad(): # Post-processing ODIN non richiede gradiente
-            # c_logits_odin è già diviso per T. La funzione sotto fa softmax.
+        with torch.no_grad(): # performing inference on perturbed input
+            # c_logits_odin already divided by T in window_inference_odin function
             pixel_logits_crops_odin = to_per_pixel_logits_semantic(m_logits_odin, c_logits_odin)
             
             # stitching ODIN
             full_logits_odin = torch.cat([pixel_logits_crops_odin[0:1], pixel_logits_crops_odin[1:2]], dim=-1)
             full_logits_odin = F.interpolate(full_logits_odin, size=(1024, 2048), mode="bilinear", align_corners=False)
             
-            # ODIN Score = MSP su output perturbato e scalato
-            # full_logits_odin sono già probabilità pesate (sigm * softmax).
-            # Ma attenzione: to_per_pixel restituisce PROBABILITÀ (einsum di probs).
-            # Quindi full_logits_odin contiene già valori ~ [0,1].
-            # L'MSP si calcola come (1 - max(pixel_probs)).
-            
+            # full_logits_odin are already weighted probabilities (sigmoid * softmax)
+            # to_per_pixel returns PROBABILITIES (einsum of probs)
+            # MSP is calculated as (1 - max(pixel_probs)).
             anomaly_result_ODIN = 1.0 - torch.max(full_logits_odin, dim=1)[0].squeeze().cpu().numpy()
 
         pathGT = path.replace("images", "labels_masks")                

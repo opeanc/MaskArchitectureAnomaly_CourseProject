@@ -21,12 +21,12 @@ class CityscapesAnomalyDataset(Dataset):
     def __init__(self, city_root, obj_root, image_transform=None, mask_transform=None, p_anomaly=0.5, subset='train'):
         """
         Args:
-            city_root: Cartella Cityscapes
-            obj_root: Cartella con gli oggetti da utilizzare (img + mask)
-            image_transform: Trasformazioni PyTorch per immagine
-            mask_transform: Trasformazioni PyTorch per maschera
-            p_anomaly: Probabilità di inserire un'anomalia (0.5 default)
-            subset: Subset utilizzato per costruire il dataset
+            city_root: Cityscapes directory
+            obj_root: Directory with objects to use (img + mask)
+            image_transform: PyTorch transformations for image
+            mask_transform: PyTorch transformations for mask
+            p_anomaly: Probability of inserting an anomaly (default 0.5)
+            subset: Subset used to build the dataset
         """
 
         self.obj_root = obj_root
@@ -60,7 +60,7 @@ class CityscapesAnomalyDataset(Dataset):
         # Anomaly injection
         if random.random() < self.p_anomaly:
 
-            # random aomaly sampling
+            # random anomaly sampling
             obj_path, mask_path, obj_label = load_sample(self.annotations)
             obj_path = os.path.join(self.obj_root, obj_path)
             mask_path = os.path.join(self.obj_root, mask_path)

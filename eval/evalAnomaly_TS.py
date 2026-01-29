@@ -122,7 +122,7 @@ def main():
     print(f"Found {len(file_list)} images.")
 
     # -------------------------------------------------------------------------
-    # MODALITÀ 1: STANDARD (Una sola temperatura)
+    # MODE 1: STANDARD EVALUATION WITH FIXED TEMPERATURE
     # -------------------------------------------------------------------------
     if not args.best_temperature:
         msp_anomaly_score_list = []
@@ -173,7 +173,7 @@ def main():
             print("No valid data found to calculate metrics.")
 
     # -------------------------------------------------------------------------
-    # MODALITÀ 2: BEST TEMPERATURE SEARCH
+    # MODE 2: BEST TEMPERATURE SEARCH
     # -------------------------------------------------------------------------
     else:
         print("\n--- MODE: BEST TEMPERATURE SEARCH ---")
@@ -195,13 +195,13 @@ def main():
                 with torch.no_grad():
                     logits = model(images) # (1, 20, 512, 1024)
                     
-                    # Flattening spaziale per salvare RAM e CPU
+                    # logit flattening
                     logits_flat = logits.squeeze(0).permute(1, 2, 0).reshape(-1, NUM_CLASSES).cpu().numpy()
                     
                 # Flatten mask
                 mask_flat = ood_gts.flatten()
                 
-                # Filtra pixel validi subito
+                # Filter valid pixels
                 valid_idx = (mask_flat == 0) | (mask_flat == 1)
                 
                 all_logits_list.append(logits_flat[valid_idx])
@@ -210,14 +210,14 @@ def main():
             except Exception as e:
                 print(f"Skipping {path}: {e}")
 
-        # Pulizia RAM
+        # RAM cleanup
         del model
         if 'images' in locals(): del images
         torch.cuda.empty_cache()
         gc.collect()
-        print("Model deleted from GPU to free RAM.")
+        print("Model deleted from GPU to free RAM")
 
-        print("Concatenating Arrays (Memory Intensive)...")
+        print("Concatenating Arrays")
         if len(all_logits_list) == 0:
             print("No valid data found.")
             return
@@ -232,10 +232,10 @@ def main():
         best_t, best_score = 1.0, 0.0
 
         for t in candidates:
-            # Scalatura
+            # Scaling
             scaled = all_logits / t
             
-            # Softmax stabile
+            # Softmax
             shift = np.max(scaled, axis=1, keepdims=True)
             exp_l = np.exp(scaled - shift)
             probs = exp_l / np.sum(exp_l, axis=1, keepdims=True)
@@ -243,7 +243,7 @@ def main():
             # MSP Score (1 - max_prob)
             scores = 1.0 - np.max(probs, axis=1)
             
-            # Calcolo AUPRC
+            # AUPRC calculation
             auprc = average_precision_score(all_labels, scores)
             print(f"   T={t:<5} -> MSP AuPRC: {auprc*100:.2f}%")
             
@@ -251,7 +251,7 @@ def main():
                 best_score = auprc
                 best_t = t
 
-        # CALCOLO FINALE DI FPR95 PER IL BEST T
+        # FPR95 calculation with best T
         print(f"\nRecalculating FPR95 for Best T = {best_t}...")
         scaled_best = all_logits / best_t
         shift_best = np.max(scaled_best, axis=1, keepdims=True)
